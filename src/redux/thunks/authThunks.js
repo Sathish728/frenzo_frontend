@@ -5,15 +5,18 @@ import {
   sendOTPStart,
   sendOTPSuccess,
   sendOTPFailure,
-  verifyOTPStart,
-  verifyOTPSuccess,
-  verifyOTPFailure,
+  verifyOTPWithFirebaseStart,
+  verifyOTPWithFirebaseSuccess,
+  verifyOTPWithFirebaseFailure,
+  logout as logoutAction,
 } from '../slices/authSlice';
 import Toast from 'react-native-toast-message';
 
-// Step 1: Send OTP via Firebase
+/**
+ * Step 1: Send OTP via Firebase
+ */
 export const sendOTP = (phoneNumber) => async (dispatch) => {
-  dispatch(sendOTPStart());
+  dispatch(sendOTPStart(phoneNumber));
   try {
     await firebaseAuthService.sendOTP(phoneNumber);
     dispatch(sendOTPSuccess());
@@ -22,6 +25,7 @@ export const sendOTP = (phoneNumber) => async (dispatch) => {
       type: 'success',
       text1: 'OTP Sent',
       text2: 'Check your phone for the verification code',
+      visibilityTime: 3000,
     });
   } catch (error) {
     dispatch(sendOTPFailure(error.message));
@@ -29,65 +33,71 @@ export const sendOTP = (phoneNumber) => async (dispatch) => {
       type: 'error',
       text1: 'Error',
       text2: error.message,
+      visibilityTime: 4000,
     });
   }
 };
 
-// Step 2: Verify OTP and authenticate with backend
-export const verifyOTP = (phoneNumber, otp, role = null, name = null) => async (dispatch) => {
-  dispatch(verifyOTPStart());
+/**
+ * Step 2: Verify OTP with Firebase and authenticate with backend
+ */
+export const verifyOTPWithFirebase = ({ idToken, role, name }) => async (dispatch) => {
+  dispatch(verifyOTPWithFirebaseStart());
   try {
-    // Step 2a: Verify OTP with Firebase
-    const { idToken } = await firebaseAuthService.verifyOTP(otp);
-    
-    console.log('✅ Firebase OTP verified, sending to backend...');
+    console.log('🔐 Verifying with backend...', { role, name });
 
-    // Step 2b: Send Firebase token to backend
+    // Send Firebase ID token to backend for verification
     const response = await authAPI.verifyFirebaseToken(idToken, role, name);
     
-    // Check if new user needs registration
-    if (response.data.user.isNewUser) {
-      dispatch(verifyOTPFailure({
+    console.log('✅ Backend response:', response);
+
+    // Check if user needs to complete registration
+    if (response.user?.isNewUser) {
+      dispatch(verifyOTPWithFirebaseFailure({
         message: 'Please complete registration',
         isNewUser: true,
       }));
       return;
     }
 
-    // Step 2c: Save JWT token from backend
+    // Save JWT token and user info
     await AsyncStorage.multiSet([
-      ['token', response.data.token],
-      ['userId', response.data.user.id],
-      ['userRole', response.data.user.role],
+      ['token', response.token],
+      ['userId', response.user.id],
+      ['userRole', response.user.role],
     ]);
 
-    dispatch(verifyOTPSuccess({
-      token: response.data.token,
-      user: response.data.user,
+    dispatch(verifyOTPWithFirebaseSuccess({
+      token: response.token,
+      user: response.user,
     }));
     
     Toast.show({
       type: 'success',
-      text1: 'Success',
-      text2: 'Login successful',
+      text1: 'Welcome!',
+      text2: `Logged in as ${response.user.role}`,
+      visibilityTime: 2000,
     });
   } catch (error) {
     const errorMessage = error.response?.data?.message || error.message || 'Verification failed';
     
-    dispatch(verifyOTPFailure({
+    dispatch(verifyOTPWithFirebaseFailure({
       message: errorMessage,
       isNewUser: error.response?.data?.user?.isNewUser || false,
     }));
     
     Toast.show({
       type: 'error',
-      text1: 'Error',
+      text1: 'Authentication Failed',
       text2: errorMessage,
+      visibilityTime: 4000,
     });
   }
 };
 
-// Resend OTP
+/**
+ * Resend OTP
+ */
 export const resendOTP = (phoneNumber) => async (dispatch) => {
   try {
     await firebaseAuthService.resendOTP(phoneNumber);
@@ -95,29 +105,73 @@ export const resendOTP = (phoneNumber) => async (dispatch) => {
       type: 'success',
       text1: 'OTP Resent',
       text2: 'Please check your phone',
+      visibilityTime: 3000,
     });
   } catch (error) {
     Toast.show({
       type: 'error',
       text1: 'Error',
       text2: error.message,
+      visibilityTime: 4000,
     });
   }
 };
 
-// Logout
+/**
+ * Logout user
+ */
 export const logoutUser = () => async (dispatch) => {
   try {
+    // Sign out from Firebase
     await firebaseAuthService.signOut();
+    
+    // Clear local storage
     await AsyncStorage.multiRemove(['token', 'userId', 'userRole']);
-    dispatch({ type: 'auth/logout' });
+    
+    // Clear Redux state
+    dispatch(logoutAction());
     
     Toast.show({
       type: 'info',
       text1: 'Logged Out',
-      text2: 'You have been logged out',
+      text2: 'You have been logged out successfully',
+      visibilityTime: 2000,
     });
   } catch (error) {
-    console.error('Logout error:', error);
+    console.error('❌ Logout error:', error);
+    Toast.show({
+      type: 'error',
+      text1: 'Error',
+      text2: 'Failed to logout',
+      visibilityTime: 3000,
+    });
+  }
+};
+
+/**
+ * Check if user is already authenticated (on app start)
+ */
+export const checkAuthStatus = () => async (dispatch) => {
+  try {
+    const token = await AsyncStorage.getItem('token');
+    const userId = await AsyncStorage.getItem('userId');
+    const userRole = await AsyncStorage.getItem('userRole');
+
+    if (token && userId && userRole) {
+      // Verify token is still valid
+      try {
+        const response = await authAPI.verifyToken();
+        dispatch(verifyOTPWithFirebaseSuccess({
+          token,
+          user: response.user,
+        }));
+      } catch (error) {
+        // Token is invalid, clear storage
+        await AsyncStorage.multiRemove(['token', 'userId', 'userRole']);
+        dispatch(logoutAction());
+      }
+    }
+  } catch (error) {
+    console.error('❌ Check auth status error:', error);
   }
 };

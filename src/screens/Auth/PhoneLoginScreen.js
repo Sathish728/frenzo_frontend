@@ -1,4 +1,3 @@
-// src/screens/Auth/PhoneLoginScreen.js
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -7,21 +6,29 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  Alert,
 } from 'react-native';
 import { useDispatch, useSelector } from 'react-redux';
-import { sendOTP, clearAuthError } from '../../redux/slices/authSlice';
-import firebaseService from '../../services/firebase.service';
+import { sendOTP, clearAuthError } from '../../redux/thunks/authThunks';
+import { selectAuthLoading, selectAuthError, selectOTPSent } from '../../redux/slices/authSlice';
 import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import { theme } from '../../config/theme';
 
 const PhoneLoginScreen = ({ navigation }) => {
   const dispatch = useDispatch();
-  const { loading, error, otpSent } = useSelector((state) => state.auth);
+  const loading = useSelector(selectAuthLoading);
+  const error = useSelector(selectAuthError);
+  const otpSent = useSelector(selectOTPSent);
   
   const [phone, setPhone] = useState('');
   const [phoneError, setPhoneError] = useState('');
+
+  useEffect(() => {
+    // Navigate to OTP screen when OTP is sent
+    if (otpSent) {
+      navigation.navigate('OTPVerify', { phone });
+    }
+  }, [otpSent, navigation, phone]);
 
   useEffect(() => {
     return () => {
@@ -40,7 +47,7 @@ const PhoneLoginScreen = ({ navigation }) => {
     return null;
   };
 
-  const handleSendOTP = async () => {
+  const handleSendOTP = () => {
     setPhoneError('');
     
     const error = validatePhone(phone);
@@ -49,20 +56,7 @@ const PhoneLoginScreen = ({ navigation }) => {
       return;
     }
 
-    try {
-      // Send OTP using Firebase
-      const result = await firebaseService.sendOTP(phone);
-      
-      if (result.success) {
-        // Navigate to OTP screen
-        navigation.navigate('OTPVerify', { 
-          phone,
-          verificationId: result.verificationId 
-        });
-      }
-    } catch (error) {
-      Alert.alert('Error', error.message || 'Failed to send OTP');
-    }
+    dispatch(sendOTP(phone));
   };
 
   return (
@@ -75,7 +69,8 @@ const PhoneLoginScreen = ({ navigation }) => {
         keyboardShouldPersistTaps="handled"
       >
         <View style={styles.header}>
-          <Text style={styles.title}>Welcome Back</Text>
+          <Text style={styles.emoji}>📱</Text>
+          <Text style={styles.title}>Welcome</Text>
           <Text style={styles.subtitle}>
             Enter your phone number to continue
           </Text>
@@ -89,7 +84,7 @@ const PhoneLoginScreen = ({ navigation }) => {
               setPhone(text);
               setPhoneError('');
             }}
-            placeholder="Enter your phone number"
+            placeholder="+91 1234567890"
             keyboardType="phone-pad"
             maxLength={15}
             error={phoneError || error}
@@ -97,7 +92,7 @@ const PhoneLoginScreen = ({ navigation }) => {
 
           <View style={styles.infoBox}>
             <Text style={styles.infoText}>
-              📱 We'll send you a 6-digit verification code
+              📨 We'll send you a 6-digit verification code via SMS
             </Text>
           </View>
 
@@ -106,12 +101,14 @@ const PhoneLoginScreen = ({ navigation }) => {
             onPress={handleSendOTP}
             loading={loading}
             disabled={!phone || loading}
+            style={styles.button}
           />
         </View>
 
         <View style={styles.footer}>
           <Text style={styles.footerText}>
-            By continuing, you agree to our Terms of Service and Privacy Policy
+            By continuing, you agree to our{'\n'}
+            Terms of Service and Privacy Policy
           </Text>
         </View>
       </ScrollView>
@@ -131,6 +128,11 @@ const styles = StyleSheet.create({
   },
   header: {
     marginBottom: theme.spacing.xxl,
+    alignItems: 'center',
+  },
+  emoji: {
+    fontSize: 64,
+    marginBottom: theme.spacing.md,
   },
   title: {
     fontSize: theme.fonts.sizes.xxxl,
@@ -141,6 +143,7 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: theme.fonts.sizes.md,
     color: theme.colors.textLight,
+    textAlign: 'center',
   },
   form: {
     marginBottom: theme.spacing.xl,
@@ -155,6 +158,9 @@ const styles = StyleSheet.create({
     fontSize: theme.fonts.sizes.sm,
     color: theme.colors.textLight,
     lineHeight: 20,
+  },
+  button: {
+    marginTop: theme.spacing.md,
   },
   footer: {
     marginTop: theme.spacing.xl,

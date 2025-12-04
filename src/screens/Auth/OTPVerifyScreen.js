@@ -1,4 +1,3 @@
-// src/screens/Auth/OTPVerifyScreen.js
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -11,8 +10,9 @@ import {
   Alert,
 } from 'react-native';
 import { useDispatch, useSelector } from 'react-redux';
-import { verifyOTPWithFirebase, clearAuthError } from '../../redux/slices/authSlice';
-import firebaseService from '../../services/firebase.service';
+import { verifyOTPWithFirebase, resendOTP, clearAuthError } from '../../redux/thunks/authThunks';
+import { selectAuthLoading, selectAuthError, selectIsNewUser } from '../../redux/slices/authSlice';
+import firebaseAuthService from '../../config/firebase';
 import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import { theme } from '../../config/theme';
@@ -20,7 +20,9 @@ import { theme } from '../../config/theme';
 const OTPVerifyScreen = ({ route, navigation }) => {
   const { phone } = route.params;
   const dispatch = useDispatch();
-  const { loading, error, isNewUser } = useSelector((state) => state.auth);
+  const loading = useSelector(selectAuthLoading);
+  const error = useSelector(selectAuthError);
+  const isNewUser = useSelector(selectIsNewUser);
   
   const [otp, setOtp] = useState('');
   const [otpError, setOtpError] = useState('');
@@ -81,11 +83,11 @@ const OTPVerifyScreen = ({ route, navigation }) => {
     }
 
     try {
-      // Verify OTP with Firebase
-      const result = await firebaseService.verifyOTP(otp);
+      // Step 1: Verify OTP with Firebase
+      const result = await firebaseAuthService.verifyOTP(otp);
       
       if (result.success) {
-        // Send Firebase ID token to backend
+        // Step 2: Send Firebase ID token to backend
         dispatch(verifyOTPWithFirebase({
           idToken: result.idToken,
           role: showRegistration ? role : undefined,
@@ -97,13 +99,8 @@ const OTPVerifyScreen = ({ route, navigation }) => {
     }
   };
 
-  const handleResendOTP = async () => {
-    try {
-      await firebaseService.sendOTP(phone);
-      Alert.alert('Success', 'OTP sent successfully');
-    } catch (error) {
-      Alert.alert('Error', error.message || 'Failed to resend OTP');
-    }
+  const handleResendOTP = () => {
+    dispatch(resendOTP(phone));
   };
 
   return (
@@ -116,28 +113,37 @@ const OTPVerifyScreen = ({ route, navigation }) => {
         keyboardShouldPersistTaps="handled"
       >
         <View style={styles.header}>
+          <Text style={styles.emoji}>🔐</Text>
           <Text style={styles.title}>Verify OTP</Text>
           <Text style={styles.subtitle}>
-            Enter the 6-digit code sent to {phone}
+            Enter the 6-digit code sent to{'\n'}
+            {phone}
           </Text>
         </View>
 
         <View style={styles.form}>
           <Input
-            label="OTP"
+            label="OTP Code"
             value={otp}
             onChangeText={(text) => {
               setOtp(text);
               setOtpError('');
             }}
-            placeholder="Enter 6-digit OTP"
+            placeholder="000000"
             keyboardType="number-pad"
             maxLength={6}
             error={otpError}
+            style={styles.otpInput}
           />
 
           {showRegistration && (
             <>
+              <View style={styles.registrationNotice}>
+                <Text style={styles.noticeText}>
+                  ℹ️ New user detected. Please complete your profile:
+                </Text>
+              </View>
+
               <Input
                 label="Your Name"
                 value={name}
@@ -145,11 +151,11 @@ const OTPVerifyScreen = ({ route, navigation }) => {
                   setName(text);
                   setNameError('');
                 }}
-                placeholder="Enter your name"
+                placeholder="Enter your full name"
                 error={nameError}
               />
 
-              <Text style={styles.label}>Select Role</Text>
+              <Text style={styles.label}>Select Role *</Text>
               <View style={styles.roleContainer}>
                 <TouchableOpacity
                   style={[
@@ -158,14 +164,16 @@ const OTPVerifyScreen = ({ route, navigation }) => {
                   ]}
                   onPress={() => setRole('men')}
                 >
+                  <Text style={styles.roleEmoji}>👨</Text>
                   <Text
                     style={[
                       styles.roleText,
                       role === 'men' && styles.roleTextActive,
                     ]}
                   >
-                    👨 Men (Caller)
+                    Men (Caller)
                   </Text>
+                  <Text style={styles.roleDesc}>Make calls to women</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
@@ -175,36 +183,44 @@ const OTPVerifyScreen = ({ route, navigation }) => {
                   ]}
                   onPress={() => setRole('women')}
                 >
+                  <Text style={styles.roleEmoji}>👩</Text>
                   <Text
                     style={[
                       styles.roleText,
                       role === 'women' && styles.roleTextActive,
                     ]}
                   >
-                    👩 Women (Receiver)
+                    Women (Receiver)
                   </Text>
+                  <Text style={styles.roleDesc}>Receive calls & earn</Text>
                 </TouchableOpacity>
               </View>
             </>
           )}
 
           <Button
-            title={showRegistration ? 'Register' : 'Verify OTP'}
+            title={showRegistration ? 'Complete Registration' : 'Verify OTP'}
             onPress={handleVerifyOTP}
             loading={loading}
             disabled={!otp || (showRegistration && (!name || !role))}
+            style={styles.button}
           />
 
           <TouchableOpacity
             style={styles.resendButton}
             onPress={handleResendOTP}
+            disabled={loading}
           >
-            <Text style={styles.resendText}>Resend OTP</Text>
+            <Text style={styles.resendText}>
+              Didn't receive code? Resend OTP
+            </Text>
           </TouchableOpacity>
         </View>
 
         {error && !isNewUser && (
-          <Text style={styles.errorText}>{error}</Text>
+          <View style={styles.errorBox}>
+            <Text style={styles.errorText}>⚠️ {error}</Text>
+          </View>
         )}
       </ScrollView>
     </KeyboardAvoidingView>
@@ -223,6 +239,11 @@ const styles = StyleSheet.create({
   },
   header: {
     marginBottom: theme.spacing.xxl,
+    alignItems: 'center',
+  },
+  emoji: {
+    fontSize: 64,
+    marginBottom: theme.spacing.md,
   },
   title: {
     fontSize: theme.fonts.sizes.xxxl,
@@ -233,15 +254,31 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: theme.fonts.sizes.md,
     color: theme.colors.textLight,
+    textAlign: 'center',
+    lineHeight: 22,
   },
   form: {
     marginBottom: theme.spacing.xl,
+  },
+  otpInput: {
+    marginBottom: theme.spacing.lg,
+  },
+  registrationNotice: {
+    backgroundColor: `${theme.colors.info}20`,
+    padding: theme.spacing.md,
+    borderRadius: theme.borderRadius.md,
+    marginBottom: theme.spacing.lg,
+  },
+  noticeText: {
+    fontSize: theme.fonts.sizes.sm,
+    color: theme.colors.info,
+    lineHeight: 20,
   },
   label: {
     fontSize: theme.fonts.sizes.md,
     color: theme.colors.text,
     marginBottom: theme.spacing.sm,
-    fontWeight: '500',
+    fontWeight: '600',
   },
   roleContainer: {
     flexDirection: 'row',
@@ -250,37 +287,61 @@ const styles = StyleSheet.create({
   },
   roleButton: {
     flex: 1,
-    padding: theme.spacing.md,
+    padding: theme.spacing.lg,
     borderRadius: theme.borderRadius.md,
     borderWidth: 2,
     borderColor: theme.colors.border,
     alignItems: 'center',
+    backgroundColor: theme.colors.white,
   },
   roleButtonActive: {
     borderColor: theme.colors.primary,
-    backgroundColor: `${theme.colors.primary}20`,
+    backgroundColor: `${theme.colors.primary}10`,
+  },
+  roleEmoji: {
+    fontSize: 32,
+    marginBottom: theme.spacing.sm,
   },
   roleText: {
     fontSize: theme.fonts.sizes.md,
     color: theme.colors.textLight,
+    fontWeight: '600',
+    marginBottom: theme.spacing.xs,
   },
   roleTextActive: {
     color: theme.colors.primary,
     fontWeight: 'bold',
   },
-  resendButton: {
+  roleDesc: {
+    fontSize: theme.fonts.sizes.xs,
+    color: theme.colors.textMuted,
+    textAlign: 'center',
+  },
+  button: {
     marginTop: theme.spacing.md,
+  },
+  resendButton: {
+    marginTop: theme.spacing.lg,
     alignSelf: 'center',
+    padding: theme.spacing.sm,
   },
   resendText: {
     fontSize: theme.fonts.sizes.md,
     color: theme.colors.primary,
     fontWeight: '600',
   },
+  errorBox: {
+    backgroundColor: `${theme.colors.danger}10`,
+    padding: theme.spacing.md,
+    borderRadius: theme.borderRadius.md,
+    borderWidth: 1,
+    borderColor: `${theme.colors.danger}30`,
+  },
   errorText: {
     fontSize: theme.fonts.sizes.sm,
     color: theme.colors.danger,
     textAlign: 'center',
+    lineHeight: 20,
   },
 });
 
