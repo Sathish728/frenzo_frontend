@@ -1,4 +1,4 @@
-package com.frontend;  // CHANGE THIS
+package com.frontend;  // This is correct
 
 import android.app.Application;
 import com.facebook.react.PackageList;

@@ -6,6 +6,22 @@ const {getDefaultConfig, mergeConfig} = require('@react-native/metro-config');
  *
  * @type {import('metro-config').MetroConfig}
  */
-const config = {};
+const config = {
+  watchFolders: [],
+  resolver: {
+    blockList: [
+      /android\/app\/build\/.*/,
+      /android\/build\/.*/,
+      /android\/\.gradle\/.*/,
+      /ios\/build\/.*/,
+      /ios\/Pods\/.*/,
+    ],
+  },
+  watcher: {
+    watchman: {
+      deferStates: ['hg.update'],
+    },
+  },
+};
 
 module.exports = mergeConfig(getDefaultConfig(__dirname), config);
