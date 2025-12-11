@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "873968093286",
+    "project_id": "frenzo-46322",
+    "storage_bucket": "frenzo-46322.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:873968093286:android:d5c9181343fb48579505a7",
+        "android_client_info": {
+          "package_name": "com.frndzone"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC5jcvtPNJjy-9Y0n5ytj_7zCq7rL6_LSg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

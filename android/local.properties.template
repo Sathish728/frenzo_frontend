@@ -1,0 +1,11 @@
+# This file should be created automatically by Android Studio
+# If not, create it manually with your SDK path
+
+# Windows example:
+# sdk.dir=C:\\Users\\YourUsername\\AppData\\Local\\Android\\Sdk
+
+# Mac example:
+# sdk.dir=/Users/YourUsername/Library/Android/sdk
+
+# Linux example:
+# sdk.dir=/home/YourUsername/Android/Sdk
