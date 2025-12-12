@@ -1,8 +1,8 @@
 // API Configuration
 // For Android Emulator use: http://10.0.2.2:5000
 // For Physical Device use your computer's IP: http://192.168.1.XXX:5000
-export const API_URL = 'http://10.0.2.2:5000';
-export const SOCKET_URL = 'http://10.0.2.2:5000';
+export const API_URL = ' http://localhost:5000/api';
+export const SOCKET_URL = ' http://localhost:5000';
 
 // App Colors - Dark Theme
 export const COLORS = {
