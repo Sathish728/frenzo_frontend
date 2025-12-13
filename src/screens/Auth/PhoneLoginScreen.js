@@ -1,4 +1,4 @@
-import React, {useState} from 'react';
+import React, {useState, useEffect} from 'react';
 import {
   View,
   Text,
@@ -14,7 +14,7 @@ import {useDispatch, useSelector} from 'react-redux';
 
 import {COLORS, FONTS, SPACING, RADIUS} from '../../config/constants';
 import {signInWithPhone} from '../../config/firebase';
-import {setPhoneNumber, setOtpSent, setLoading, setError} from '../../redux/slices/authSlice';
+import {setPhoneNumber, setOtpSent, setLoading, setError, clearError} from '../../redux/slices/authSlice';
 import Input from '../../components/common/Input';
 import Button from '../../components/common/Button';
 import {validatePhone, sanitizePhone} from '../../utils/helpers';
@@ -26,6 +26,13 @@ const PhoneLoginScreen = ({navigation}) => {
   const [phone, setPhone] = useState('');
   const [phoneError, setPhoneError] = useState('');
 
+  // Clear errors when component unmounts
+  useEffect(() => {
+    return () => {
+      dispatch(clearError());
+    };
+  }, [dispatch]);
+
   const handleSendOTP = async () => {
     // Validate phone
     const cleanPhone = sanitizePhone(phone);
@@ -35,25 +42,39 @@ const PhoneLoginScreen = ({navigation}) => {
     }
     setPhoneError('');
 
+    // Start loading
     dispatch(setLoading(true));
     dispatch(setError(null));
 
     try {
+      console.log('Attempting to send OTP to:', cleanPhone);
       const result = await signInWithPhone(cleanPhone);
+      
+      console.log('Firebase result:', result);
       
       if (result.success) {
         dispatch(setPhoneNumber(cleanPhone));
         dispatch(setOtpSent(true));
+        
+        // Navigate to OTP screen
         navigation.navigate('OTPVerify', {
           confirmation: result.confirmation,
           phone: cleanPhone,
         });
       } else {
-        Alert.alert('Error', result.error || 'Failed to send OTP');
+        // Firebase returned an error
+        const errorMessage = result.error || 'Failed to send OTP';
+        dispatch(setError(errorMessage));
+        Alert.alert('Error', errorMessage);
       }
     } catch (err) {
-      Alert.alert('Error', err.message || 'Something went wrong');
+      // Unexpected error
+      console.error('Send OTP error:', err);
+      const errorMessage = err.message || 'Something went wrong';
+      dispatch(setError(errorMessage));
+      Alert.alert('Error', errorMessage);
     } finally {
+      // Always stop loading, whether success or error
       dispatch(setLoading(false));
     }
   };
@@ -90,18 +111,23 @@ const PhoneLoginScreen = ({navigation}) => {
             <Input
               label="Phone Number"
               value={phone}
-              onChangeText={setPhone}
+              onChangeText={(text) => {
+                setPhone(text);
+                if (phoneError) setPhoneError('');
+              }}
               placeholder="Enter 10-digit number"
               keyboardType="phone-pad"
               maxLength={10}
               leftIcon="phone"
               error={phoneError}
+              editable={!isLoading}
             />
 
             <Button
               title="Send OTP"
               onPress={handleSendOTP}
               loading={isLoading}
+              disabled={isLoading || phone.length < 10}
               fullWidth
               icon="arrow-right"
               iconPosition="right"
