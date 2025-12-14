@@ -1,3 +1,4 @@
+// src/screens/Auth/PhoneLoginScreen.js
 import React, {useState, useEffect} from 'react';
 import {
   View,
@@ -25,11 +26,16 @@ const PhoneLoginScreen = ({navigation}) => {
   
   const [phone, setPhone] = useState('');
   const [phoneError, setPhoneError] = useState('');
+  const [localLoading, setLocalLoading] = useState(false); // Use local loading state
 
-  // Clear errors when component unmounts
+  // Clear errors and reset loading when component mounts
   useEffect(() => {
+    dispatch(clearError());
+    dispatch(setLoading(false)); // Reset loading state on mount
+    
     return () => {
       dispatch(clearError());
+      dispatch(setLoading(false));
     };
   }, [dispatch]);
 
@@ -42,8 +48,8 @@ const PhoneLoginScreen = ({navigation}) => {
     }
     setPhoneError('');
 
-    // Start loading
-    dispatch(setLoading(true));
+    // Use local loading state to avoid persist issues
+    setLocalLoading(true);
     dispatch(setError(null));
 
     try {
@@ -74,10 +80,12 @@ const PhoneLoginScreen = ({navigation}) => {
       dispatch(setError(errorMessage));
       Alert.alert('Error', errorMessage);
     } finally {
-      // Always stop loading, whether success or error
-      dispatch(setLoading(false));
+      // Always stop loading
+      setLocalLoading(false);
     }
   };
+
+  const isButtonLoading = localLoading || isLoading;
 
   return (
     <LinearGradient
@@ -120,14 +128,14 @@ const PhoneLoginScreen = ({navigation}) => {
               maxLength={10}
               leftIcon="phone"
               error={phoneError}
-              editable={!isLoading}
+              editable={!isButtonLoading}
             />
 
             <Button
               title="Send OTP"
               onPress={handleSendOTP}
-              loading={isLoading}
-              disabled={isLoading || phone.length < 10}
+              loading={isButtonLoading}
+              disabled={isButtonLoading || phone.length < 10}
               fullWidth
               icon="arrow-right"
               iconPosition="right"

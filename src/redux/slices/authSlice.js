@@ -1,3 +1,4 @@
+// src/redux/slices/authSlice.js
 import {createSlice, createAsyncThunk} from '@reduxjs/toolkit';
 import {authAPI} from '../../services/api/authAPI';
 import {signOut as firebaseSignOut} from '../../config/firebase';
@@ -6,54 +7,13 @@ const initialState = {
   user: null,
   token: null,
   isAuthenticated: false,
-  isLoading: false,
+  isLoading: false, // This should always start as false
   error: null,
   otpSent: false,
   phoneNumber: null,
 };
 
-// Verify Firebase token with backend
-export const verifyWithBackend = createAsyncThunk(
-  'auth/verifyWithBackend',
-  async ({idToken, role, name}, {rejectWithValue}) => {
-    try {
-      const response = await authAPI.verifyFirebaseToken(idToken, role, name);
-      return response.data;
-    } catch (error) {
-      return rejectWithValue(
-        error.response?.data?.message || 'Verification failed',
-      );
-    }
-  },
-);
-
-// Refresh token
-export const refreshToken = createAsyncThunk(
-  'auth/refreshToken',
-  async (_, {rejectWithValue}) => {
-    try {
-      const response = await authAPI.refreshToken();
-      return response.data;
-    } catch (error) {
-      return rejectWithValue(
-        error.response?.data?.message || 'Token refresh failed',
-      );
-    }
-  },
-);
-
-// Logout
-export const logout = createAsyncThunk(
-  'auth/logout',
-  async (_, {rejectWithValue}) => {
-    try {
-      await firebaseSignOut();
-      return true;
-    } catch (error) {
-      return rejectWithValue(error.message || 'Logout failed');
-    }
-  },
-);
+// ... rest of your thunks ...
 
 const authSlice = createSlice({
   name: 'auth',
@@ -70,6 +30,7 @@ const authSlice = createSlice({
     },
     setError: (state, action) => {
       state.error = action.payload;
+      state.isLoading = false; // Always reset loading when setting error
     },
     clearError: (state) => {
       state.error = null;
@@ -84,7 +45,11 @@ const authSlice = createSlice({
         state.user.coins = action.payload;
       }
     },
-    resetAuth: () => initialState,
+    resetAuth: () => ({...initialState, isLoading: false}), // Ensure isLoading is false
+    // Add this new action to reset loading state
+    resetLoading: (state) => {
+      state.isLoading = false;
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -113,8 +78,8 @@ const authSlice = createSlice({
         }
       })
       // Logout
-      .addCase(logout.fulfilled, () => initialState)
-      .addCase(logout.rejected, () => initialState);
+      .addCase(logout.fulfilled, () => ({...initialState, isLoading: false}))
+      .addCase(logout.rejected, () => ({...initialState, isLoading: false}));
   },
 });
 
@@ -127,6 +92,7 @@ export const {
   updateUser,
   updateCoins,
   resetAuth,
+  resetLoading,
 } = authSlice.actions;
 
 export default authSlice.reducer;

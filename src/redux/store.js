@@ -1,3 +1,4 @@
+// src/redux/store.js
 import {configureStore, combineReducers} from '@reduxjs/toolkit';
 import {
   persistStore,
@@ -29,6 +30,13 @@ const persistConfig = {
   storage: AsyncStorage,
   whitelist: ['auth'], // Only persist auth state
   blacklist: ['call'], // Never persist call state
+};
+
+// Create a transform to filter out isLoading from auth
+const authPersistConfig = {
+  key: 'auth',
+  storage: AsyncStorage,
+  blacklist: ['isLoading', 'error', 'otpSent'], // Don't persist these
 };
 
 const persistedReducer = persistReducer(persistConfig, rootReducer);
