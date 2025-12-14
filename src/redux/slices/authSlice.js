@@ -7,13 +7,54 @@ const initialState = {
   user: null,
   token: null,
   isAuthenticated: false,
-  isLoading: false, // This should always start as false
+  isLoading: false,
   error: null,
   otpSent: false,
   phoneNumber: null,
 };
 
-// ... rest of your thunks ...
+// Verify Firebase token with backend
+export const verifyWithBackend = createAsyncThunk(
+  'auth/verifyWithBackend',
+  async ({idToken, role, name}, {rejectWithValue}) => {
+    try {
+      const response = await authAPI.verifyFirebaseToken(idToken, role, name);
+      return response.data;
+    } catch (error) {
+      return rejectWithValue(
+        error.response?.data?.message || 'Verification failed',
+      );
+    }
+  },
+);
+
+// Refresh token
+export const refreshToken = createAsyncThunk(
+  'auth/refreshToken',
+  async (_, {rejectWithValue}) => {
+    try {
+      const response = await authAPI.refreshToken();
+      return response.data;
+    } catch (error) {
+      return rejectWithValue(
+        error.response?.data?.message || 'Token refresh failed',
+      );
+    }
+  },
+);
+
+// Logout
+export const logout = createAsyncThunk(
+  'auth/logout',
+  async (_, {rejectWithValue}) => {
+    try {
+      await firebaseSignOut();
+      return true;
+    } catch (error) {
+      return rejectWithValue(error.message || 'Logout failed');
+    }
+  },
+);
 
 const authSlice = createSlice({
   name: 'auth',
@@ -30,7 +71,7 @@ const authSlice = createSlice({
     },
     setError: (state, action) => {
       state.error = action.payload;
-      state.isLoading = false; // Always reset loading when setting error
+      state.isLoading = false;
     },
     clearError: (state) => {
       state.error = null;
@@ -45,8 +86,7 @@ const authSlice = createSlice({
         state.user.coins = action.payload;
       }
     },
-    resetAuth: () => ({...initialState, isLoading: false}), // Ensure isLoading is false
-    // Add this new action to reset loading state
+    resetAuth: () => ({...initialState, isLoading: false}),
     resetLoading: (state) => {
       state.isLoading = false;
     },

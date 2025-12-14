@@ -28,15 +28,8 @@ const persistConfig = {
   key: 'root',
   version: 1,
   storage: AsyncStorage,
-  whitelist: ['auth'], // Only persist auth state
-  blacklist: ['call'], // Never persist call state
-};
-
-// Create a transform to filter out isLoading from auth
-const authPersistConfig = {
-  key: 'auth',
-  storage: AsyncStorage,
-  blacklist: ['isLoading', 'error', 'otpSent'], // Don't persist these
+  whitelist: ['auth'],
+  blacklist: ['call'],
 };
 
 const persistedReducer = persistReducer(persistConfig, rootReducer);
