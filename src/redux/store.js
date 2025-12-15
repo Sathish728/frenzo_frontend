@@ -16,6 +16,7 @@ import authReducer from './slices/authSlice';
 import userReducer from './slices/userSlice';
 import callReducer from './slices/callSlice';
 import paymentReducer from './slices/paymentSlice';
+import {setAuthToken, clearAuthToken} from '../services/api/axiosConfig';
 
 const rootReducer = combineReducers({
   auth: authReducer,
@@ -42,6 +43,22 @@ export const store = configureStore({
         ignoredActions: [FLUSH, REHYDRATE, PAUSE, PERSIST, PURGE, REGISTER],
       },
     }),
+});
+
+// Subscribe to store changes to sync auth token with axios
+let currentToken = null;
+store.subscribe(() => {
+  const state = store.getState();
+  const newToken = state.auth?.token;
+  
+  if (newToken !== currentToken) {
+    currentToken = newToken;
+    if (newToken) {
+      setAuthToken(newToken);
+    } else {
+      clearAuthToken();
+    }
+  }
 });
 
 export const persistor = persistStore(store);

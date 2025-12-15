@@ -1,4 +1,3 @@
-// src/redux/slices/authSlice.js
 import {createSlice, createAsyncThunk} from '@reduxjs/toolkit';
 import {authAPI} from '../../services/api/authAPI';
 import {signOut as firebaseSignOut} from '../../config/firebase';
@@ -21,9 +20,8 @@ export const verifyWithBackend = createAsyncThunk(
       const response = await authAPI.verifyFirebaseToken(idToken, role, name);
       return response.data;
     } catch (error) {
-      return rejectWithValue(
-        error.response?.data?.message || 'Verification failed',
-      );
+      const errorMessage = error.response?.data?.message || 'Verification failed';
+      return rejectWithValue(errorMessage);
     }
   },
 );
@@ -36,9 +34,20 @@ export const refreshToken = createAsyncThunk(
       const response = await authAPI.refreshToken();
       return response.data;
     } catch (error) {
-      return rejectWithValue(
-        error.response?.data?.message || 'Token refresh failed',
-      );
+      return rejectWithValue(error.response?.data?.message || 'Token refresh failed');
+    }
+  },
+);
+
+// Get current user
+export const getCurrentUser = createAsyncThunk(
+  'auth/getCurrentUser',
+  async (_, {rejectWithValue}) => {
+    try {
+      const response = await authAPI.getCurrentUser();
+      return response.data;
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to get user');
     }
   },
 );
@@ -93,31 +102,35 @@ const authSlice = createSlice({
   },
   extraReducers: (builder) => {
     builder
-      // Verify with backend
       .addCase(verifyWithBackend.pending, (state) => {
         state.isLoading = true;
         state.error = null;
       })
       .addCase(verifyWithBackend.fulfilled, (state, action) => {
         state.isLoading = false;
-        state.user = action.payload.user;
-        state.token = action.payload.token;
+        state.user = action.payload.data.user;
+        state.token = action.payload.data.token;
         state.isAuthenticated = true;
         state.otpSent = false;
         state.phoneNumber = null;
+        state.error = null;
       })
       .addCase(verifyWithBackend.rejected, (state, action) => {
         state.isLoading = false;
         state.error = action.payload;
       })
-      // Refresh token
-      .addCase(refreshToken.fulfilled, (state, action) => {
-        state.token = action.payload.token;
-        if (action.payload.user) {
-          state.user = action.payload.user;
+      .addCase(getCurrentUser.fulfilled, (state, action) => {
+        if (action.payload.data?.user) {
+          state.user = {...state.user, ...action.payload.data.user};
         }
       })
-      // Logout
+      .addCase(refreshToken.fulfilled, (state, action) => {
+        state.token = action.payload.data.token;
+        if (action.payload.data.user) {
+          state.user = action.payload.data.user;
+        }
+      })
+      .addCase(refreshToken.rejected, () => ({...initialState, isLoading: false}))
       .addCase(logout.fulfilled, () => ({...initialState, isLoading: false}))
       .addCase(logout.rejected, () => ({...initialState, isLoading: false}));
   },
