@@ -16,19 +16,19 @@ export const userAPI = {
     return api.get('/users/available-women');
   },
 
-  // Toggle availability (for women)
+  // Toggle availability (for women) - using POST
   toggleAvailability: (isAvailable) => {
-    return api.post('/users/toggle-availability', {isAvailable});
+    return api.post('/users/toggle-availability', { isAvailable });
   },
 
   // Report a user
   reportUser: (userId, reason) => {
-    return api.post('/users/report', {userId, reason});
+    return api.post('/users/report', { userId, reason });
   },
 
   // Block a user
   blockUser: (userId) => {
-    return api.post('/users/block', {userId});
+    return api.post('/users/block', { userId });
   },
 
   // Get blocked users
@@ -41,5 +41,3 @@ export const userAPI = {
     return api.delete(`/users/blocked/${userId}`);
   },
 };
-
-export default userAPI;

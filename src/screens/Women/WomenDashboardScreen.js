@@ -15,13 +15,14 @@ import {useDispatch, useSelector} from 'react-redux';
 
 import {COLORS, FONTS, SPACING, RADIUS, CALL_RATES, WITHDRAWAL} from '../../config/constants';
 import {logout} from '../../redux/slices/authSlice';
-import {toggleAvailability, setAvailabilityStatus} from '../../redux/slices/userSlice';
+import {setAvailabilityStatus} from '../../redux/slices/userSlice';
 import {receiveCall} from '../../redux/slices/callSlice';
+import {userAPI} from '../../services/api/userAPI';
 import socketService from '../../services/socketService';
 import Avatar from '../../components/common/Avatar';
 import Card from '../../components/common/Card';
 import Button from '../../components/common/Button';
-import {calculateEarnings, formatNumber, formatCurrency} from '../../utils/helpers';
+import {formatNumber} from '../../utils/helpers';
 
 const WomenDashboardScreen = ({navigation}) => {
   const dispatch = useDispatch();
@@ -29,6 +30,7 @@ const WomenDashboardScreen = ({navigation}) => {
   const {isAvailable} = useSelector((state) => state.user);
   const {status} = useSelector((state) => state.call);
 
+  const [localIsAvailable, setLocalIsAvailable] = useState(isAvailable || false);
   const [isTogglingAvailability, setIsTogglingAvailability] = useState(false);
 
   useEffect(() => {
@@ -41,6 +43,11 @@ const WomenDashboardScreen = ({navigation}) => {
     };
   }, [token]);
 
+  // Sync local state with redux
+  useEffect(() => {
+    setLocalIsAvailable(isAvailable);
+  }, [isAvailable]);
+
   // Listen for incoming calls
   useEffect(() => {
     if (status === 'ringing') {
@@ -49,14 +56,26 @@ const WomenDashboardScreen = ({navigation}) => {
   }, [status]);
 
   const handleToggleAvailability = async (value) => {
+    // Update UI immediately for better UX
+    setLocalIsAvailable(value);
     setIsTogglingAvailability(true);
 
     try {
-      await dispatch(toggleAvailability(value)).unwrap();
+      // Call API
+      const response = await userAPI.toggleAvailability(value);
+      
+      // Update Redux state
       dispatch(setAvailabilityStatus(value));
+      
+      // Update socket
       socketService.setAvailability(value);
+      
+      console.log('Availability toggled:', value);
     } catch (err) {
-      Alert.alert('Error', 'Failed to update availability');
+      console.error('Toggle availability error:', err);
+      // Revert UI on error
+      setLocalIsAvailable(!value);
+      Alert.alert('Error', err.response?.data?.message || 'Failed to update availability. Please try again.');
     } finally {
       setIsTogglingAvailability(false);
     }
@@ -85,7 +104,7 @@ const WomenDashboardScreen = ({navigation}) => {
   };
 
   const coins = user?.coins || 0;
-  const earnings = calculateEarnings(coins);
+  const earnings = (coins / 1000) * CALL_RATES.earningsPerThousandCoins;
   const canWithdraw = coins >= WITHDRAWAL.minimumCoins;
 
   return (
@@ -108,18 +127,18 @@ const WomenDashboardScreen = ({navigation}) => {
             imageUrl={user?.profileImage}
             size={80}
             showOnlineStatus
-            isOnline={isAvailable}
+            isOnline={localIsAvailable}
           />
           <Text style={styles.userName}>{user?.name || 'User'}</Text>
           <View style={styles.statusBadge}>
             <View
               style={[
                 styles.statusDot,
-                {backgroundColor: isAvailable ? COLORS.success : COLORS.textMuted},
+                {backgroundColor: localIsAvailable ? COLORS.success : COLORS.textMuted},
               ]}
             />
             <Text style={styles.statusText}>
-              {isAvailable ? 'Online' : 'Offline'}
+              {localIsAvailable ? 'Online - Receiving Calls' : 'Offline'}
             </Text>
           </View>
         </View>
@@ -127,18 +146,20 @@ const WomenDashboardScreen = ({navigation}) => {
         {/* Availability Toggle */}
         <Card style={styles.availabilityCard}>
           <View style={styles.availabilityRow}>
-            <View>
+            <View style={styles.availabilityInfo}>
               <Text style={styles.availabilityLabel}>Available for Calls</Text>
               <Text style={styles.availabilityHint}>
-                Turn on to receive calls
+                {localIsAvailable 
+                  ? 'You will receive calls from men' 
+                  : 'Turn on to start receiving calls'}
               </Text>
             </View>
             <Switch
-              value={isAvailable}
+              value={localIsAvailable}
               onValueChange={handleToggleAvailability}
               disabled={isTogglingAvailability}
               trackColor={{false: COLORS.surfaceLight, true: COLORS.primaryLight}}
-              thumbColor={isAvailable ? COLORS.primary : COLORS.textMuted}
+              thumbColor={localIsAvailable ? COLORS.primary : COLORS.textMuted}
             />
           </View>
         </Card>
@@ -200,7 +221,7 @@ const WomenDashboardScreen = ({navigation}) => {
         {/* Actions */}
         <View style={styles.actions}>
           <Button
-            title="Withdraw Earnings"
+            title={canWithdraw ? 'Withdraw Earnings' : `Need ${WITHDRAWAL.minimumCoins - coins} more coins`}
             onPress={handleWithdraw}
             variant={canWithdraw ? 'primary' : 'outline'}
             icon="bank-transfer"
@@ -279,6 +300,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+  },
+  availabilityInfo: {
+    flex: 1,
+    marginRight: SPACING.md,
   },
   availabilityLabel: {
     fontSize: FONTS.base,

@@ -6,6 +6,7 @@ import {
   ScrollView,
   Alert,
   Linking,
+  Platform,
 } from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
@@ -19,6 +20,10 @@ import Card from '../../components/common/Card';
 import PackageCard from '../../components/PackageCard';
 import {Loading} from '../../components/common/Loading';
 import {formatNumber} from '../../utils/helpers';
+
+// Replace with your actual merchant UPI ID
+const MERCHANT_UPI_ID = 'paytmqr2810050501011y4dvdwldxbl@paytm'; // Example: yourname@okaxis, yourname@ybl, etc.
+const MERCHANT_NAME = 'FrndZone';
 
 const BuyCoinsScreen = ({navigation}) => {
   const dispatch = useDispatch();
@@ -51,87 +56,143 @@ const BuyCoinsScreen = ({navigation}) => {
 
       showPaymentOptions(orderData, pkg);
     } catch (error) {
+      console.error('Payment initiation error:', error);
       Alert.alert('Error', error.response?.data?.message || 'Failed to initiate payment.');
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const generateUPIUrl = (params) => {
+  // Generate standard UPI URL
+  const generateUPIUrl = (orderId, amount, coins) => {
+    const params = {
+      pa: MERCHANT_UPI_ID,
+      pn: encodeURIComponent(MERCHANT_NAME),
+      tr: orderId,
+      tn: encodeURIComponent(`Buy ${coins} FrndZone Coins`),
+      am: amount.toString(),
+      cu: 'INR',
+    };
+    
     const queryString = Object.entries(params)
-      .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
+      .map(([key, value]) => `${key}=${value}`)
       .join('&');
+    
     return `upi://pay?${queryString}`;
   };
 
   const showPaymentOptions = (orderData, pkg) => {
     const amount = pkg.price;
     const orderId = orderData.orderId;
+    const coins = pkg.coins + (pkg.bonus || 0);
     
     Alert.alert(
       'Choose Payment Method',
-      'Select your preferred UPI app',
+      `Pay ₹${amount} for ${formatNumber(coins)} coins`,
       [
-        {text: 'Google Pay', onPress: () => openUPIApp('gpay', orderId, amount, pkg)},
-        {text: 'PhonePe', onPress: () => openUPIApp('phonepe', orderId, amount, pkg)},
-        {text: 'Paytm', onPress: () => openUPIApp('paytm', orderId, amount, pkg)},
-        {text: 'Other UPI', onPress: () => openGenericUPI(orderId, amount, pkg)},
+        {
+          text: 'Any UPI App',
+          onPress: () => openUPIIntent(orderId, amount, coins, pkg),
+        },
         {text: 'Cancel', style: 'cancel'},
       ],
     );
   };
 
-  const openUPIApp = async (app, orderId, amount, pkg) => {
-    // Replace 'merchant@upi' with your actual merchant UPI ID
-    const merchantUPI = 'merchant@okaxis';
+  // Open UPI intent - this will show all available UPI apps
+  const openUPIIntent = async (orderId, amount, coins, pkg) => {
+    const upiUrl = generateUPIUrl(orderId, amount, coins);
     
-    const upiUrls = {
-      gpay: `tez://upi/pay?pa=${merchantUPI}&pn=FrndZone&tr=${orderId}&tn=Buy%20Coins&am=${amount}&cu=INR`,
-      phonepe: `phonepe://pay?pa=${merchantUPI}&pn=FrndZone&tr=${orderId}&tn=Buy%20Coins&am=${amount}&cu=INR`,
-      paytm: `paytmmp://pay?pa=${merchantUPI}&pn=FrndZone&tr=${orderId}&tn=Buy%20Coins&am=${amount}&cu=INR`,
-    };
-
-    const url = upiUrls[app];
-
+    console.log('Opening UPI URL:', upiUrl);
+    
     try {
-      const canOpen = await Linking.canOpenURL(url);
-      if (canOpen) {
-        await Linking.openURL(url);
-        setTimeout(() => showPaymentVerification(orderId, pkg), 1000);
+      const supported = await Linking.canOpenURL(upiUrl);
+      console.log('UPI supported:', supported);
+      
+      if (supported) {
+        await Linking.openURL(upiUrl);
+        // Show verification dialog after a delay
+        setTimeout(() => {
+          showPaymentVerification(orderId, pkg);
+        }, 2000);
       } else {
-        Alert.alert('App Not Found', `${app} is not installed. Try another method.`);
+        // Try alternative methods
+        tryAlternativeUPIApps(orderId, amount, coins, pkg);
       }
     } catch (error) {
-      Alert.alert('Error', 'Failed to open payment app.');
+      console.error('UPI open error:', error);
+      tryAlternativeUPIApps(orderId, amount, coins, pkg);
     }
   };
 
-  const openGenericUPI = async (orderId, amount, pkg) => {
-    const merchantUPI = 'merchant@okaxis';
-    const url = generateUPIUrl({
-      pa: merchantUPI,
-      pn: 'FrndZone',
-      tr: orderId,
-      tn: `Buy ${pkg.coins + (pkg.bonus || 0)} coins`,
-      am: amount.toString(),
-      cu: 'INR',
-    });
+  // Try opening specific UPI apps
+  const tryAlternativeUPIApps = async (orderId, amount, coins, pkg) => {
+    const upiApps = [
+      {
+        name: 'Google Pay',
+        // GPay uses intent scheme on Android
+        url: Platform.OS === 'android' 
+          ? `intent://pay?pa=${MERCHANT_UPI_ID}&pn=${encodeURIComponent(MERCHANT_NAME)}&tr=${orderId}&tn=${encodeURIComponent(`Buy ${coins} coins`)}&am=${amount}&cu=INR#Intent;scheme=upi;package=com.google.android.apps.nbu.paisa.user;end`
+          : `gpay://upi/pay?pa=${MERCHANT_UPI_ID}&pn=${encodeURIComponent(MERCHANT_NAME)}&tr=${orderId}&am=${amount}&cu=INR`,
+        package: 'com.google.android.apps.nbu.paisa.user',
+      },
+      {
+        name: 'PhonePe',
+        url: Platform.OS === 'android'
+          ? `intent://pay?pa=${MERCHANT_UPI_ID}&pn=${encodeURIComponent(MERCHANT_NAME)}&tr=${orderId}&tn=${encodeURIComponent(`Buy ${coins} coins`)}&am=${amount}&cu=INR#Intent;scheme=upi;package=com.phonepe.app;end`
+          : `phonepe://pay?pa=${MERCHANT_UPI_ID}&pn=${encodeURIComponent(MERCHANT_NAME)}&tr=${orderId}&am=${amount}&cu=INR`,
+        package: 'com.phonepe.app',
+      },
+      {
+        name: 'Paytm',
+        url: Platform.OS === 'android'
+          ? `intent://pay?pa=${MERCHANT_UPI_ID}&pn=${encodeURIComponent(MERCHANT_NAME)}&tr=${orderId}&tn=${encodeURIComponent(`Buy ${coins} coins`)}&am=${amount}&cu=INR#Intent;scheme=upi;package=net.one97.paytm;end`
+          : `paytmmp://pay?pa=${MERCHANT_UPI_ID}&pn=${encodeURIComponent(MERCHANT_NAME)}&tr=${orderId}&am=${amount}&cu=INR`,
+        package: 'net.one97.paytm',
+      },
+    ];
 
-    try {
-      await Linking.openURL(url);
-      setTimeout(() => showPaymentVerification(orderId, pkg), 1000);
-    } catch (error) {
-      Alert.alert('Error', 'No UPI app found. Please install Google Pay or PhonePe.');
-    }
+    // Show options to user
+    Alert.alert(
+      'Select UPI App',
+      'Choose an app to complete payment',
+      [
+        ...upiApps.map(app => ({
+          text: app.name,
+          onPress: async () => {
+            try {
+              // For Android, try the standard UPI URL first
+              const standardUrl = generateUPIUrl(orderId, amount, coins);
+              await Linking.openURL(standardUrl);
+              setTimeout(() => showPaymentVerification(orderId, pkg), 2000);
+            } catch (err) {
+              console.error(`Error opening ${app.name}:`, err);
+              Alert.alert(
+                'App Not Available',
+                `${app.name} could not be opened. Please install a UPI app.`,
+              );
+            }
+          },
+        })),
+        {text: 'Cancel', style: 'cancel'},
+      ],
+    );
   };
 
   const showPaymentVerification = (orderId, pkg) => {
     Alert.alert(
       'Payment Status',
-      'Did you complete the payment?',
+      'Did you complete the payment successfully?',
       [
-        {text: 'No, Cancel', style: 'cancel', onPress: () => setCurrentOrder(null)},
-        {text: 'Yes, Verify', onPress: () => verifyPayment(orderId, pkg)},
+        {
+          text: 'No, Cancel',
+          style: 'cancel',
+          onPress: () => setCurrentOrder(null),
+        },
+        {
+          text: 'Yes, Verify Payment',
+          onPress: () => verifyPayment(orderId, pkg),
+        },
       ],
     );
   };
@@ -142,19 +203,32 @@ const BuyCoinsScreen = ({navigation}) => {
       const response = await paymentAPI.verifyUPIPayment(orderId);
       
       if (response.data.data?.success) {
-        const newCoins = (user?.coins || 0) + (pkg.coins + (pkg.bonus || 0));
+        const coinsToAdd = pkg.coins + (pkg.bonus || 0);
+        const newCoins = (user?.coins || 0) + coinsToAdd;
         dispatch(updateCoins(newCoins));
         
         Alert.alert(
           'Payment Successful! 🎉',
-          `${formatNumber(pkg.coins + (pkg.bonus || 0))} coins added!`,
+          `${formatNumber(coinsToAdd)} coins have been added to your account!`,
           [{text: 'OK', onPress: () => navigation.goBack()}],
         );
       } else {
-        Alert.alert('Payment Pending', 'Coins will be credited once payment is confirmed.');
+        Alert.alert(
+          'Payment Pending',
+          'Your payment is being processed. Coins will be credited once the payment is confirmed. This may take a few minutes.',
+          [
+            {text: 'Check Again', onPress: () => verifyPayment(orderId, pkg)},
+            {text: 'OK', style: 'cancel'},
+          ],
+        );
       }
     } catch (error) {
-      Alert.alert('Verification Failed', 'If amount was deducted, please contact support.');
+      console.error('Payment verification error:', error);
+      Alert.alert(
+        'Verification Issue',
+        'Unable to verify payment status. If the amount was deducted from your account, please wait a few minutes and check your coin balance. If coins are not credited, please contact support.',
+        [{text: 'OK'}],
+      );
     } finally {
       setIsProcessing(false);
       setCurrentOrder(null);
@@ -170,6 +244,7 @@ const BuyCoinsScreen = ({navigation}) => {
       )}
       
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        {/* Balance Card */}
         <LinearGradient
           colors={COLORS.gradientPrimary}
           start={{x: 0, y: 0}}
@@ -183,6 +258,7 @@ const BuyCoinsScreen = ({navigation}) => {
           <Text style={styles.balanceSubtext}>Coins</Text>
         </LinearGradient>
 
+        {/* Call Rate Info */}
         <Card style={styles.rateCard}>
           <View style={styles.rateRow}>
             <Icon name="phone" size={20} color={COLORS.primary} />
@@ -190,6 +266,7 @@ const BuyCoinsScreen = ({navigation}) => {
           </View>
         </Card>
 
+        {/* Packages */}
         <Text style={styles.sectionTitle}>Choose a Package</Text>
         
         {COIN_PACKAGES.map((pkg) => (
@@ -201,6 +278,7 @@ const BuyCoinsScreen = ({navigation}) => {
           />
         ))}
 
+        {/* Info Card */}
         <Card style={styles.infoCard}>
           <View style={styles.infoRow}>
             <Icon name="shield-check" size={20} color={COLORS.success} />
@@ -208,11 +286,15 @@ const BuyCoinsScreen = ({navigation}) => {
           </View>
           <View style={styles.infoRow}>
             <Icon name="lightning-bolt" size={20} color={COLORS.accent} />
-            <Text style={styles.infoText}>Instant coin credit</Text>
+            <Text style={styles.infoText}>Instant coin credit after verification</Text>
           </View>
           <View style={styles.infoRow}>
             <Icon name="cellphone" size={20} color={COLORS.primary} />
-            <Text style={styles.infoText}>Pay via Google Pay, PhonePe, Paytm</Text>
+            <Text style={styles.infoText}>Works with any UPI app</Text>
+          </View>
+          <View style={styles.infoRow}>
+            <Icon name="information" size={20} color={COLORS.textMuted} />
+            <Text style={styles.infoText}>Contact support if coins not credited</Text>
           </View>
         </Card>
       </ScrollView>
@@ -221,7 +303,10 @@ const BuyCoinsScreen = ({navigation}) => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.background },
+  container: {
+    flex: 1,
+    backgroundColor: COLORS.background,
+  },
   loadingOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.7)',
@@ -229,24 +314,73 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     zIndex: 1000,
   },
-  scrollContent: { padding: SPACING.lg },
+  scrollContent: {
+    padding: SPACING.lg,
+  },
   balanceCard: {
     borderRadius: RADIUS.xl,
     padding: SPACING.lg,
     alignItems: 'center',
     marginBottom: SPACING.md,
   },
-  balanceLabel: { fontSize: FONTS.sm, color: COLORS.white, opacity: 0.8 },
-  balanceRow: { flexDirection: 'row', alignItems: 'center', marginTop: SPACING.sm },
-  balanceValue: { fontSize: FONTS.display, fontWeight: '700', color: COLORS.white, marginLeft: SPACING.sm },
-  balanceSubtext: { fontSize: FONTS.base, color: COLORS.white, opacity: 0.8, marginTop: 4 },
-  rateCard: { marginBottom: SPACING.lg, padding: SPACING.md },
-  rateRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
-  rateText: { fontSize: FONTS.base, color: COLORS.text, marginLeft: SPACING.sm, fontWeight: '500' },
-  sectionTitle: { fontSize: FONTS.lg, fontWeight: '600', color: COLORS.text, marginBottom: SPACING.md },
-  infoCard: { marginTop: SPACING.md },
-  infoRow: { flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.sm },
-  infoText: { fontSize: FONTS.sm, color: COLORS.textSecondary, marginLeft: SPACING.sm },
+  balanceLabel: {
+    fontSize: FONTS.sm,
+    color: COLORS.white,
+    opacity: 0.8,
+  },
+  balanceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: SPACING.sm,
+  },
+  balanceValue: {
+    fontSize: FONTS.display,
+    fontWeight: '700',
+    color: COLORS.white,
+    marginLeft: SPACING.sm,
+  },
+  balanceSubtext: {
+    fontSize: FONTS.base,
+    color: COLORS.white,
+    opacity: 0.8,
+    marginTop: 4,
+  },
+  rateCard: {
+    marginBottom: SPACING.lg,
+    padding: SPACING.md,
+  },
+  rateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rateText: {
+    fontSize: FONTS.base,
+    color: COLORS.text,
+    marginLeft: SPACING.sm,
+    fontWeight: '500',
+  },
+  sectionTitle: {
+    fontSize: FONTS.lg,
+    fontWeight: '600',
+    color: COLORS.text,
+    marginBottom: SPACING.md,
+  },
+  infoCard: {
+    marginTop: SPACING.md,
+    marginBottom: SPACING.lg,
+  },
+  infoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: SPACING.sm,
+  },
+  infoText: {
+    fontSize: FONTS.sm,
+    color: COLORS.textSecondary,
+    marginLeft: SPACING.sm,
+    flex: 1,
+  },
 });
 
 export default BuyCoinsScreen;
