@@ -16,8 +16,18 @@ export const fetchAvailableWomen = createAsyncThunk(
   async (_, {rejectWithValue}) => {
     try {
       const response = await userAPI.getAvailableWomen();
-      return response.data.women || [];
+      console.log('Fetched women response:', response.data);
+      
+      // Handle different response structures
+      const women = response.data?.data?.women || 
+                    response.data?.women || 
+                    response.data?.data || 
+                    [];
+      
+      console.log('Parsed women list:', women);
+      return women;
     } catch (error) {
+      console.error('Fetch women error:', error);
       return rejectWithValue(
         error.response?.data?.message || 'Failed to fetch women',
       );
@@ -31,7 +41,7 @@ export const fetchProfile = createAsyncThunk(
   async (_, {rejectWithValue}) => {
     try {
       const response = await userAPI.getProfile();
-      return response.data.user;
+      return response.data.user || response.data.data?.user || response.data;
     } catch (error) {
       return rejectWithValue(
         error.response?.data?.message || 'Failed to fetch profile',
@@ -46,7 +56,7 @@ export const updateProfile = createAsyncThunk(
   async (data, {rejectWithValue}) => {
     try {
       const response = await userAPI.updateProfile(data);
-      return response.data.user;
+      return response.data.user || response.data.data?.user;
     } catch (error) {
       return rejectWithValue(
         error.response?.data?.message || 'Failed to update profile',
@@ -61,8 +71,10 @@ export const toggleAvailability = createAsyncThunk(
   async (isAvailable, {rejectWithValue}) => {
     try {
       const response = await userAPI.toggleAvailability(isAvailable);
-      return response.data;
+      console.log('Toggle availability response:', response.data);
+      return response.data.data || response.data;
     } catch (error) {
+      console.error('Toggle availability error:', error);
       return rejectWithValue(
         error.response?.data?.message || 'Failed to toggle availability',
       );
@@ -137,7 +149,7 @@ const userSlice = createSlice({
       })
       .addCase(fetchAvailableWomen.fulfilled, (state, action) => {
         state.isLoadingWomen = false;
-        state.availableWomen = action.payload;
+        state.availableWomen = Array.isArray(action.payload) ? action.payload : [];
       })
       .addCase(fetchAvailableWomen.rejected, (state, action) => {
         state.isLoadingWomen = false;
@@ -146,8 +158,8 @@ const userSlice = createSlice({
       // Fetch profile
       .addCase(fetchProfile.fulfilled, (state, action) => {
         state.profile = action.payload;
-        state.isOnline = action.payload.isOnline;
-        state.isAvailable = action.payload.isAvailable;
+        state.isOnline = action.payload?.isOnline;
+        state.isAvailable = action.payload?.isAvailable;
       })
       // Update profile
       .addCase(updateProfile.fulfilled, (state, action) => {
@@ -156,7 +168,9 @@ const userSlice = createSlice({
       // Toggle availability
       .addCase(toggleAvailability.fulfilled, (state, action) => {
         state.isAvailable = action.payload.isAvailable;
-        state.isOnline = action.payload.isOnline;
+        if (action.payload.isOnline !== undefined) {
+          state.isOnline = action.payload.isOnline;
+        }
       });
   },
 });
