@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useState, useRef} from 'react';
 import {
   View,
   Text,
@@ -7,6 +7,7 @@ import {
   Switch,
   Alert,
   TouchableOpacity,
+  AppState,
 } from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
@@ -16,7 +17,7 @@ import {useDispatch, useSelector} from 'react-redux';
 import {COLORS, FONTS, SPACING, RADIUS, CALL_RATES, WITHDRAWAL} from '../../config/constants';
 import {logout} from '../../redux/slices/authSlice';
 import {setAvailabilityStatus} from '../../redux/slices/userSlice';
-import {receiveCall} from '../../redux/slices/callSlice';
+import {resetCall} from '../../redux/slices/callSlice';
 import {userAPI} from '../../services/api/userAPI';
 import socketService from '../../services/socketService';
 import Avatar from '../../components/common/Avatar';
@@ -28,18 +29,39 @@ const WomenDashboardScreen = ({navigation}) => {
   const dispatch = useDispatch();
   const {user, token} = useSelector((state) => state.auth);
   const {isAvailable} = useSelector((state) => state.user);
-  const {status} = useSelector((state) => state.call);
+  const callState = useSelector((state) => state.call);
 
   const [localIsAvailable, setLocalIsAvailable] = useState(isAvailable || false);
   const [isTogglingAvailability, setIsTogglingAvailability] = useState(false);
+  const appState = useRef(AppState.currentState);
 
+  // Connect socket on mount
   useEffect(() => {
     if (token) {
+      console.log('Connecting socket with token...');
       socketService.connect(token);
     }
 
     return () => {
-      socketService.disconnect();
+      // Don't disconnect on unmount - keep socket alive
+    };
+  }, [token]);
+
+  // Handle app state changes (background/foreground)
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextAppState => {
+      if (appState.current.match(/inactive|background/) && nextAppState === 'active') {
+        // App has come to foreground - reconnect if needed
+        if (token && !socketService.isSocketConnected()) {
+          console.log('App foregrounded - reconnecting socket...');
+          socketService.connect(token);
+        }
+      }
+      appState.current = nextAppState;
+    });
+
+    return () => {
+      subscription?.remove();
     };
   }, [token]);
 
@@ -48,12 +70,15 @@ const WomenDashboardScreen = ({navigation}) => {
     setLocalIsAvailable(isAvailable);
   }, [isAvailable]);
 
-  // Listen for incoming calls
+  // *** CRITICAL: Listen for incoming calls and navigate ***
   useEffect(() => {
-    if (status === 'ringing') {
+    console.log('Call state changed:', callState.status, callState.remoteUser?.name);
+    
+    if (callState.status === 'ringing' && callState.remoteUser) {
+      console.log('Navigating to IncomingCall screen...');
       navigation.navigate('IncomingCall');
     }
-  }, [status]);
+  }, [callState.status, callState.remoteUser, navigation]);
 
   const handleToggleAvailability = async (value) => {
     // Update UI immediately for better UX
@@ -62,7 +87,7 @@ const WomenDashboardScreen = ({navigation}) => {
 
     try {
       // Call API
-      const response = await userAPI.toggleAvailability(value);
+      await userAPI.toggleAvailability(value);
       
       // Update Redux state
       dispatch(setAvailabilityStatus(value));
@@ -75,7 +100,10 @@ const WomenDashboardScreen = ({navigation}) => {
       console.error('Toggle availability error:', err);
       // Revert UI on error
       setLocalIsAvailable(!value);
-      Alert.alert('Error', err.response?.data?.message || 'Failed to update availability. Please try again.');
+      Alert.alert(
+        'Error', 
+        err.response?.data?.message || 'Failed to update availability. Please check your internet connection.'
+      );
     } finally {
       setIsTogglingAvailability(false);
     }
@@ -85,7 +113,7 @@ const WomenDashboardScreen = ({navigation}) => {
     if ((user?.coins || 0) < WITHDRAWAL.minimumCoins) {
       Alert.alert(
         'Minimum Balance Required',
-        `You need at least ${WITHDRAWAL.minimumCoins} coins to request a withdrawal.`,
+        `You need at least ${WITHDRAWAL.minimumCoins} coins to request a withdrawal.\n\nYou currently have ${user?.coins || 0} coins.`,
       );
       return;
     }
@@ -98,7 +126,10 @@ const WomenDashboardScreen = ({navigation}) => {
       {
         text: 'Logout',
         style: 'destructive',
-        onPress: () => dispatch(logout()),
+        onPress: () => {
+          socketService.disconnect();
+          dispatch(logout());
+        },
       },
     ]);
   };
@@ -162,6 +193,12 @@ const WomenDashboardScreen = ({navigation}) => {
               thumbColor={localIsAvailable ? COLORS.primary : COLORS.textMuted}
             />
           </View>
+          {localIsAvailable && (
+            <View style={styles.waitingInfo}>
+              <Icon name="phone-ring" size={16} color={COLORS.success} />
+              <Text style={styles.waitingText}>Waiting for calls...</Text>
+            </View>
+          )}
         </Card>
 
         {/* Earnings Card */}
@@ -237,6 +274,23 @@ const WomenDashboardScreen = ({navigation}) => {
             fullWidth
           />
         </View>
+
+        {/* Socket Status (Debug) */}
+        {__DEV__ && (
+          <Card style={styles.debugCard}>
+            <Text style={styles.debugTitle}>Debug Info</Text>
+            <Text style={styles.debugText}>
+              Socket: {socketService.isSocketConnected() ? '✅ Connected' : '❌ Disconnected'}{'\n'}
+              Call Status: {callState.status}{'\n'}
+              User ID: {user?.id || user?._id || 'N/A'}
+            </Text>
+            <TouchableOpacity 
+              onPress={() => socketService.reconnect()}
+              style={styles.reconnectBtn}>
+              <Text style={styles.reconnectText}>Reconnect Socket</Text>
+            </TouchableOpacity>
+          </Card>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -314,6 +368,19 @@ const styles = StyleSheet.create({
     fontSize: FONTS.sm,
     color: COLORS.textSecondary,
     marginTop: 2,
+  },
+  waitingInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: SPACING.sm,
+    paddingTop: SPACING.sm,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.surfaceLight,
+  },
+  waitingText: {
+    fontSize: FONTS.sm,
+    color: COLORS.success,
+    marginLeft: SPACING.xs,
   },
   earningsCard: {
     borderRadius: RADIUS.xl,
@@ -401,6 +468,32 @@ const styles = StyleSheet.create({
   },
   withdrawButton: {
     marginBottom: SPACING.sm,
+  },
+  debugCard: {
+    marginTop: SPACING.md,
+    backgroundColor: COLORS.surfaceLight,
+  },
+  debugTitle: {
+    fontSize: FONTS.sm,
+    fontWeight: '600',
+    color: COLORS.warning,
+    marginBottom: SPACING.xs,
+  },
+  debugText: {
+    fontSize: FONTS.xs,
+    color: COLORS.textMuted,
+    fontFamily: 'monospace',
+  },
+  reconnectBtn: {
+    marginTop: SPACING.sm,
+    padding: SPACING.xs,
+    backgroundColor: COLORS.primary,
+    borderRadius: RADIUS.sm,
+    alignItems: 'center',
+  },
+  reconnectText: {
+    fontSize: FONTS.xs,
+    color: COLORS.white,
   },
 });
 

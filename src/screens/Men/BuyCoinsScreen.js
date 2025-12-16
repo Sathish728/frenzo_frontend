@@ -7,6 +7,7 @@ import {
   Alert,
   Linking,
   Platform,
+  NativeModules,
 } from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
@@ -21,8 +22,8 @@ import PackageCard from '../../components/PackageCard';
 import {Loading} from '../../components/common/Loading';
 import {formatNumber} from '../../utils/helpers';
 
-// Replace with your actual merchant UPI ID
-const MERCHANT_UPI_ID = 'paytmqr2810050501011y4dvdwldxbl@paytm'; // Example: yourname@okaxis, yourname@ybl, etc.
+// Replace with your actual merchant UPI ID - THIS IS IMPORTANT!
+const MERCHANT_UPI_ID = 'paytmqr2810050501011y4dvdwldxbl@paytm';
 const MERCHANT_NAME = 'FrndZone';
 
 const BuyCoinsScreen = ({navigation}) => {
@@ -54,144 +55,184 @@ const BuyCoinsScreen = ({navigation}) => {
         coins: pkg.coins + (pkg.bonus || 0),
       });
 
-      showPaymentOptions(orderData, pkg);
+      openUPIPayment(orderData.orderId, pkg);
     } catch (error) {
       console.error('Payment initiation error:', error);
       Alert.alert('Error', error.response?.data?.message || 'Failed to initiate payment.');
-    } finally {
       setIsProcessing(false);
     }
   };
 
-  // Generate standard UPI URL
+  // Generate UPI deep link URL
   const generateUPIUrl = (orderId, amount, coins) => {
-    const params = {
-      pa: MERCHANT_UPI_ID,
-      pn: encodeURIComponent(MERCHANT_NAME),
-      tr: orderId,
-      tn: encodeURIComponent(`Buy ${coins} FrndZone Coins`),
-      am: amount.toString(),
-      cu: 'INR',
-    };
+    // Standard UPI URL format that works across all apps
+    const transactionNote = `FrndZone-${coins}coins`;
     
-    const queryString = Object.entries(params)
-      .map(([key, value]) => `${key}=${value}`)
-      .join('&');
+    const params = new URLSearchParams({
+      pa: MERCHANT_UPI_ID,                    // Payee address (UPI ID)
+      pn: MERCHANT_NAME,                      // Payee name
+      tr: orderId,                            // Transaction reference
+      tn: transactionNote,                    // Transaction note
+      am: amount.toString(),                  // Amount
+      cu: 'INR',                              // Currency
+      mode: '02',                             // Mode (02 = UPI collect)
+    });
     
-    return `upi://pay?${queryString}`;
+    return `upi://pay?${params.toString()}`;
   };
 
-  const showPaymentOptions = (orderData, pkg) => {
+  const openUPIPayment = async (orderId, pkg) => {
     const amount = pkg.price;
-    const orderId = orderData.orderId;
     const coins = pkg.coins + (pkg.bonus || 0);
-    
-    Alert.alert(
-      'Choose Payment Method',
-      `Pay ₹${amount} for ${formatNumber(coins)} coins`,
-      [
-        {
-          text: 'Any UPI App',
-          onPress: () => openUPIIntent(orderId, amount, coins, pkg),
-        },
-        {text: 'Cancel', style: 'cancel'},
-      ],
-    );
-  };
-
-  // Open UPI intent - this will show all available UPI apps
-  const openUPIIntent = async (orderId, amount, coins, pkg) => {
     const upiUrl = generateUPIUrl(orderId, amount, coins);
     
     console.log('Opening UPI URL:', upiUrl);
     
     try {
-      const supported = await Linking.canOpenURL(upiUrl);
-      console.log('UPI supported:', supported);
+      // Check if any UPI app can handle this
+      const canOpen = await Linking.canOpenURL(upiUrl);
+      console.log('Can open UPI URL:', canOpen);
       
-      if (supported) {
+      if (canOpen) {
         await Linking.openURL(upiUrl);
-        // Show verification dialog after a delay
+        
+        // Wait a moment then show verification dialog
         setTimeout(() => {
+          setIsProcessing(false);
           showPaymentVerification(orderId, pkg);
         }, 2000);
       } else {
-        // Try alternative methods
-        tryAlternativeUPIApps(orderId, amount, coins, pkg);
+        // No UPI app found - try specific app URLs
+        setIsProcessing(false);
+        showUPIAppOptions(orderId, amount, coins, pkg);
       }
     } catch (error) {
       console.error('UPI open error:', error);
-      tryAlternativeUPIApps(orderId, amount, coins, pkg);
+      setIsProcessing(false);
+      
+      // Try specific apps as fallback
+      showUPIAppOptions(orderId, amount, coins, pkg);
     }
   };
 
-  // Try opening specific UPI apps
-  const tryAlternativeUPIApps = async (orderId, amount, coins, pkg) => {
+  // Show options to open specific UPI apps
+  const showUPIAppOptions = (orderId, amount, coins, pkg) => {
     const upiApps = [
       {
         name: 'Google Pay',
-        // GPay uses intent scheme on Android
-        url: Platform.OS === 'android' 
-          ? `intent://pay?pa=${MERCHANT_UPI_ID}&pn=${encodeURIComponent(MERCHANT_NAME)}&tr=${orderId}&tn=${encodeURIComponent(`Buy ${coins} coins`)}&am=${amount}&cu=INR#Intent;scheme=upi;package=com.google.android.apps.nbu.paisa.user;end`
-          : `gpay://upi/pay?pa=${MERCHANT_UPI_ID}&pn=${encodeURIComponent(MERCHANT_NAME)}&tr=${orderId}&am=${amount}&cu=INR`,
-        package: 'com.google.android.apps.nbu.paisa.user',
+        packageName: 'com.google.android.apps.nbu.paisa.user',
+        scheme: 'tez://',
       },
       {
-        name: 'PhonePe',
-        url: Platform.OS === 'android'
-          ? `intent://pay?pa=${MERCHANT_UPI_ID}&pn=${encodeURIComponent(MERCHANT_NAME)}&tr=${orderId}&tn=${encodeURIComponent(`Buy ${coins} coins`)}&am=${amount}&cu=INR#Intent;scheme=upi;package=com.phonepe.app;end`
-          : `phonepe://pay?pa=${MERCHANT_UPI_ID}&pn=${encodeURIComponent(MERCHANT_NAME)}&tr=${orderId}&am=${amount}&cu=INR`,
-        package: 'com.phonepe.app',
+        name: 'PhonePe', 
+        packageName: 'com.phonepe.app',
+        scheme: 'phonepe://',
       },
       {
         name: 'Paytm',
-        url: Platform.OS === 'android'
-          ? `intent://pay?pa=${MERCHANT_UPI_ID}&pn=${encodeURIComponent(MERCHANT_NAME)}&tr=${orderId}&tn=${encodeURIComponent(`Buy ${coins} coins`)}&am=${amount}&cu=INR#Intent;scheme=upi;package=net.one97.paytm;end`
-          : `paytmmp://pay?pa=${MERCHANT_UPI_ID}&pn=${encodeURIComponent(MERCHANT_NAME)}&tr=${orderId}&am=${amount}&cu=INR`,
-        package: 'net.one97.paytm',
+        packageName: 'net.one97.paytm',
+        scheme: 'paytmmp://',
+      },
+      {
+        name: 'BHIM',
+        packageName: 'in.org.npci.upiapp',
+        scheme: 'upi://',
       },
     ];
 
-    // Show options to user
     Alert.alert(
-      'Select UPI App',
-      'Choose an app to complete payment',
+      'Select Payment App',
+      'Choose an app to complete payment.\n\nMake sure you have at least one UPI app installed.',
       [
         ...upiApps.map(app => ({
           text: app.name,
-          onPress: async () => {
-            try {
-              // For Android, try the standard UPI URL first
-              const standardUrl = generateUPIUrl(orderId, amount, coins);
-              await Linking.openURL(standardUrl);
-              setTimeout(() => showPaymentVerification(orderId, pkg), 2000);
-            } catch (err) {
-              console.error(`Error opening ${app.name}:`, err);
-              Alert.alert(
-                'App Not Available',
-                `${app.name} could not be opened. Please install a UPI app.`,
-              );
-            }
-          },
+          onPress: () => tryOpenSpecificApp(app, orderId, amount, coins, pkg),
         })),
+        {
+          text: 'Install UPI App',
+          onPress: () => {
+            // Open Play Store to install GPay
+            Linking.openURL('https://play.google.com/store/apps/details?id=com.google.android.apps.nbu.paisa.user');
+          },
+        },
         {text: 'Cancel', style: 'cancel'},
       ],
     );
   };
 
+  const tryOpenSpecificApp = async (app, orderId, amount, coins, pkg) => {
+    setIsProcessing(true);
+    
+    // Build the standard UPI URL
+    const upiUrl = generateUPIUrl(orderId, amount, coins);
+    
+    try {
+      // For Android, try using Intent URL format for specific apps
+      if (Platform.OS === 'android') {
+        // Try standard UPI URL first (most compatible)
+        const canOpenUPI = await Linking.canOpenURL('upi://pay');
+        
+        if (canOpenUPI) {
+          await Linking.openURL(upiUrl);
+          setTimeout(() => {
+            setIsProcessing(false);
+            showPaymentVerification(orderId, pkg);
+          }, 2000);
+          return;
+        }
+      }
+      
+      // Fallback: try the specific app scheme
+      const appUrl = `${app.scheme}pay?${upiUrl.split('?')[1]}`;
+      const canOpen = await Linking.canOpenURL(appUrl);
+      
+      if (canOpen) {
+        await Linking.openURL(appUrl);
+        setTimeout(() => {
+          setIsProcessing(false);
+          showPaymentVerification(orderId, pkg);
+        }, 2000);
+      } else {
+        setIsProcessing(false);
+        Alert.alert(
+          `${app.name} Not Found`,
+          `${app.name} is not installed on your device. Please install a UPI app to make payments.`,
+          [
+            {
+              text: 'Install',
+              onPress: () => Linking.openURL(`https://play.google.com/store/apps/details?id=${app.packageName}`),
+            },
+            {text: 'Cancel', style: 'cancel'},
+          ],
+        );
+      }
+    } catch (error) {
+      console.error(`Error opening ${app.name}:`, error);
+      setIsProcessing(false);
+      Alert.alert('Error', `Could not open ${app.name}. Please try another payment method.`);
+    }
+  };
+
   const showPaymentVerification = (orderId, pkg) => {
     Alert.alert(
       'Payment Status',
-      'Did you complete the payment successfully?',
+      'Did you complete the payment in the UPI app?',
       [
         {
-          text: 'No, Cancel',
+          text: 'No, I cancelled',
           style: 'cancel',
-          onPress: () => setCurrentOrder(null),
+          onPress: () => {
+            setCurrentOrder(null);
+            Alert.alert('Payment Cancelled', 'Your payment was not completed.');
+          },
         },
         {
-          text: 'Yes, Verify Payment',
+          text: 'Yes, Verify',
           onPress: () => verifyPayment(orderId, pkg),
+        },
+        {
+          text: 'Try Again',
+          onPress: () => openUPIPayment(orderId, pkg),
         },
       ],
     );
@@ -199,7 +240,9 @@ const BuyCoinsScreen = ({navigation}) => {
 
   const verifyPayment = async (orderId, pkg) => {
     setIsProcessing(true);
+    
     try {
+      // Call backend to verify payment status
       const response = await paymentAPI.verifyUPIPayment(orderId);
       
       if (response.data.data?.success) {
@@ -213,12 +256,23 @@ const BuyCoinsScreen = ({navigation}) => {
           [{text: 'OK', onPress: () => navigation.goBack()}],
         );
       } else {
+        // Payment not yet confirmed
         Alert.alert(
           'Payment Pending',
-          'Your payment is being processed. Coins will be credited once the payment is confirmed. This may take a few minutes.',
+          'Your payment is being processed. Coins will be added once the payment is confirmed.\n\nThis usually takes a few seconds. Please wait and try verifying again.',
           [
-            {text: 'Check Again', onPress: () => verifyPayment(orderId, pkg)},
-            {text: 'OK', style: 'cancel'},
+            {
+              text: 'Check Again',
+              onPress: () => {
+                // Wait a moment then retry
+                setTimeout(() => verifyPayment(orderId, pkg), 3000);
+              },
+            },
+            {
+              text: 'OK',
+              style: 'cancel',
+              onPress: () => setCurrentOrder(null),
+            },
           ],
         );
       }
@@ -226,7 +280,7 @@ const BuyCoinsScreen = ({navigation}) => {
       console.error('Payment verification error:', error);
       Alert.alert(
         'Verification Issue',
-        'Unable to verify payment status. If the amount was deducted from your account, please wait a few minutes and check your coin balance. If coins are not credited, please contact support.',
+        'Unable to verify payment status right now. If the amount was deducted from your account:\n\n1. Wait a few minutes\n2. Check your coin balance\n3. Contact support if coins are not credited',
         [{text: 'OK'}],
       );
     } finally {
@@ -239,7 +293,7 @@ const BuyCoinsScreen = ({navigation}) => {
     <SafeAreaView style={styles.container} edges={['top']}>
       {isProcessing && (
         <View style={styles.loadingOverlay}>
-          <Loading message="Processing..." />
+          <Loading message="Processing payment..." />
         </View>
       )}
       
@@ -280,22 +334,37 @@ const BuyCoinsScreen = ({navigation}) => {
 
         {/* Info Card */}
         <Card style={styles.infoCard}>
+          <View style={styles.infoHeader}>
+            <Icon name="information" size={20} color={COLORS.primary} />
+            <Text style={styles.infoTitle}>Payment Information</Text>
+          </View>
           <View style={styles.infoRow}>
-            <Icon name="shield-check" size={20} color={COLORS.success} />
+            <Icon name="shield-check" size={18} color={COLORS.success} />
             <Text style={styles.infoText}>Secure UPI payment</Text>
           </View>
           <View style={styles.infoRow}>
-            <Icon name="lightning-bolt" size={20} color={COLORS.accent} />
+            <Icon name="lightning-bolt" size={18} color={COLORS.accent} />
             <Text style={styles.infoText}>Instant coin credit after verification</Text>
           </View>
           <View style={styles.infoRow}>
-            <Icon name="cellphone" size={20} color={COLORS.primary} />
-            <Text style={styles.infoText}>Works with any UPI app</Text>
+            <Icon name="cellphone" size={18} color={COLORS.primary} />
+            <Text style={styles.infoText}>Works with GPay, PhonePe, Paytm, BHIM</Text>
           </View>
           <View style={styles.infoRow}>
-            <Icon name="information" size={20} color={COLORS.textMuted} />
-            <Text style={styles.infoText}>Contact support if coins not credited</Text>
+            <Icon name="help-circle" size={18} color={COLORS.textMuted} />
+            <Text style={styles.infoText}>Contact support if coins not credited within 24 hours</Text>
           </View>
+        </Card>
+
+        {/* Troubleshooting */}
+        <Card style={styles.troubleCard}>
+          <Text style={styles.troubleTitle}>Payment Not Working?</Text>
+          <Text style={styles.troubleText}>
+            • Make sure you have a UPI app (GPay, PhonePe, Paytm) installed{'\n'}
+            • Check your internet connection{'\n'}
+            • Try updating your UPI app{'\n'}
+            • Ensure your UPI account is active
+          </Text>
         </Card>
       </ScrollView>
     </SafeAreaView>
@@ -368,18 +437,45 @@ const styles = StyleSheet.create({
   },
   infoCard: {
     marginTop: SPACING.md,
-    marginBottom: SPACING.lg,
+    marginBottom: SPACING.sm,
+  },
+  infoHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: SPACING.sm,
+  },
+  infoTitle: {
+    fontSize: FONTS.base,
+    fontWeight: '600',
+    color: COLORS.text,
+    marginLeft: SPACING.sm,
   },
   infoRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: SPACING.sm,
+    marginBottom: SPACING.xs,
+    paddingLeft: SPACING.xs,
   },
   infoText: {
     fontSize: FONTS.sm,
     color: COLORS.textSecondary,
     marginLeft: SPACING.sm,
     flex: 1,
+  },
+  troubleCard: {
+    marginBottom: SPACING.lg,
+    backgroundColor: COLORS.surfaceLight,
+  },
+  troubleTitle: {
+    fontSize: FONTS.base,
+    fontWeight: '600',
+    color: COLORS.warning,
+    marginBottom: SPACING.xs,
+  },
+  troubleText: {
+    fontSize: FONTS.sm,
+    color: COLORS.textSecondary,
+    lineHeight: 20,
   },
 });
 
