@@ -18,6 +18,7 @@ class SocketService {
     this.isConnected = false;
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 10;
+    this.heartbeatInterval = null;
   }
 
   // Connect to socket server
@@ -37,6 +38,9 @@ class SocketService {
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
       timeout: 20000,
+      // These help with Render free tier
+      forceNew: false,
+      multiplex: true,
     });
 
     this.setupListeners();
@@ -59,11 +63,21 @@ class SocketService {
         this.socket.emit('user_online', userId);
         console.log('Emitted user_online for:', userId);
       }
+
+      // Start heartbeat to keep connection alive (important for Render free tier)
+      this.startHeartbeat();
     });
 
     this.socket.on('disconnect', (reason) => {
       console.log('❌ Socket disconnected:', reason);
       this.isConnected = false;
+      this.stopHeartbeat();
+      
+      // If server disconnected us, try to reconnect
+      if (reason === 'io server disconnect') {
+        console.log('Server disconnected, attempting reconnect...');
+        this.socket.connect();
+      }
     });
 
     this.socket.on('connect_error', (error) => {
@@ -77,12 +91,23 @@ class SocketService {
 
     this.socket.on('reconnect', (attemptNumber) => {
       console.log('Socket reconnected after', attemptNumber, 'attempts');
+      
+      // Re-register user online after reconnect
+      const state = store.getState();
+      const userId = state.auth.user?.id || state.auth.user?._id;
+      if (userId) {
+        this.socket.emit('user_online', userId);
+      }
+    });
+
+    // Heartbeat response
+    this.socket.on('pong', () => {
+      // Connection is alive
     });
 
     // ========== WOMEN LIST UPDATES ==========
     this.socket.on('women_list_updated', (data) => {
       console.log('Women list updated:', data);
-      // Handle both array and object with women property
       const women = Array.isArray(data) ? data : (data.women || []);
       store.dispatch(setAvailableWomen(women));
     });
@@ -101,7 +126,7 @@ class SocketService {
 
     // ========== INCOMING CALL (for women) ==========
     this.socket.on('incoming_call', (data) => {
-      console.log('📞 INCOMING CALL:', data);
+      console.log('📞 INCOMING CALL:', JSON.stringify(data));
       
       // Build caller object from various possible structures
       const caller = data.caller || {
@@ -122,11 +147,6 @@ class SocketService {
     this.socket.on('call_answered', (data) => {
       console.log('📞 Call answered:', data);
       store.dispatch(callAnswered({callId: data.callId}));
-      
-      // Auto-transition to connected after a short delay
-      setTimeout(() => {
-        store.dispatch(callConnected());
-      }, 500);
     });
 
     // ========== CALL CONNECTED ==========
@@ -160,6 +180,12 @@ class SocketService {
       );
     });
 
+    // ========== CALL MISSED ==========
+    this.socket.on('call_missed', (data) => {
+      console.log('📞 Call missed:', data);
+      // Could show a notification here
+    });
+
     // ========== CALL REJECTED ==========
     this.socket.on('call_rejected', (data) => {
       console.log('📞 Call rejected:', data);
@@ -176,7 +202,7 @@ class SocketService {
       console.log('📞 Call failed:', data);
       store.dispatch(
         callFailed({
-          reason: 'failed',
+          reason: data.reason || 'failed',
           error: data.message || 'Call failed',
         }),
       );
@@ -214,6 +240,28 @@ class SocketService {
         }),
       );
     });
+  }
+
+  // ========== HEARTBEAT (keeps Render free tier alive) ==========
+  startHeartbeat() {
+    this.stopHeartbeat(); // Clear any existing
+    
+    // Send ping every 25 seconds (Render times out after ~30s of inactivity)
+    this.heartbeatInterval = setInterval(() => {
+      if (this.socket?.connected) {
+        this.socket.emit('ping');
+      }
+    }, 25000);
+    
+    console.log('Heartbeat started');
+  }
+
+  stopHeartbeat() {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+      console.log('Heartbeat stopped');
+    }
   }
 
   // ========== EMIT METHODS ==========
@@ -296,6 +344,7 @@ class SocketService {
 
   // Disconnect
   disconnect() {
+    this.stopHeartbeat();
     if (this.socket) {
       console.log('Disconnecting socket...');
       this.socket.disconnect();
@@ -310,7 +359,9 @@ class SocketService {
     const state = store.getState();
     const token = state.auth.token;
     if (token) {
-      this.connect(token);
+      setTimeout(() => {
+        this.connect(token);
+      }, 1000);
     }
   }
 }

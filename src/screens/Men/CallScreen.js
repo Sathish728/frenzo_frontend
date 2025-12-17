@@ -7,6 +7,8 @@ import {
   Alert,
   Animated,
   BackHandler,
+  PermissionsAndroid,
+  Platform,
 } from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
@@ -21,6 +23,7 @@ import {
   toggleSpeaker,
   endCall,
   resetCall,
+  callFailed,
 } from '../../redux/slices/callSlice';
 import {updateCoins} from '../../redux/slices/authSlice';
 import socketService from '../../services/socketService';
@@ -40,6 +43,35 @@ const CallScreen = ({navigation, route}) => {
   const timerRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const [localCoinsUsed, setLocalCoinsUsed] = useState(0);
+  const [callTimeout, setCallTimeout] = useState(null);
+
+  // Request permissions on mount
+  useEffect(() => {
+    requestPermissions();
+  }, []);
+
+  const requestPermissions = async () => {
+    if (Platform.OS === 'android') {
+      try {
+        const grants = await PermissionsAndroid.requestMultiple([
+          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+          PermissionsAndroid.PERMISSIONS.CAMERA,
+        ]);
+        
+        console.log('Permissions:', grants);
+        
+        if (grants[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO] !== 'granted') {
+          Alert.alert(
+            'Microphone Permission Required',
+            'Please grant microphone permission to make calls.',
+            [{text: 'OK'}]
+          );
+        }
+      } catch (err) {
+        console.warn('Permission error:', err);
+      }
+    }
+  };
 
   // Handle back button
   useEffect(() => {
@@ -87,6 +119,36 @@ const CallScreen = ({navigation, route}) => {
     }
   }, [status, pulseAnim]);
 
+  // Set timeout for unanswered calls (30 seconds)
+  // REMOVED: Simulated call connected - now waits for real socket event
+  useEffect(() => {
+    if (status === 'calling') {
+      // Set a 30-second timeout for no answer
+      const timeout = setTimeout(() => {
+        if (status === 'calling') {
+          console.log('Call timeout - no answer');
+          dispatch(callFailed({reason: 'no_answer', error: 'No answer'}));
+        }
+      }, 30000);
+      
+      setCallTimeout(timeout);
+      
+      return () => {
+        if (timeout) clearTimeout(timeout);
+      };
+    }
+  }, [status]);
+
+  // Clear timeout when call connects or ends
+  useEffect(() => {
+    if (status === 'connected' || status === 'ended') {
+      if (callTimeout) {
+        clearTimeout(callTimeout);
+        setCallTimeout(null);
+      }
+    }
+  }, [status, callTimeout]);
+
   // Timer for connected call
   useEffect(() => {
     if (status === 'connected') {
@@ -114,7 +176,7 @@ const CallScreen = ({navigation, route}) => {
         return;
       }
 
-      // Deduct coins
+      // Deduct coins locally (server also deducts)
       dispatch(updateCoins(currentCoins - coinsToDeduct));
       setLocalCoinsUsed(prev => prev + coinsToDeduct);
     }
@@ -131,40 +193,51 @@ const CallScreen = ({navigation, route}) => {
       // Show appropriate message based on end reason
       let message = 'Call ended';
       let title = 'Call Ended';
+      let shouldAlert = false;
 
       switch (endReason) {
         case 'insufficient_coins':
           title = 'Low Balance';
           message = 'Your coin balance is too low to continue the call.';
+          shouldAlert = true;
           break;
         case 'busy':
           title = 'User Busy';
           message = 'This user is currently on another call. Please try again later.';
+          shouldAlert = true;
           break;
         case 'rejected':
           title = 'Call Declined';
           message = 'The user declined your call.';
+          shouldAlert = true;
           break;
         case 'no_answer':
           title = 'No Answer';
-          message = 'The user did not answer.';
+          message = 'The user did not answer. They might be away.';
+          shouldAlert = true;
           break;
         case 'failed':
           title = 'Call Failed';
-          message = error || 'Unable to connect. Please try again.';
+          message = error || 'Unable to connect. Please check your internet and try again.';
+          shouldAlert = true;
           break;
         case 'disconnected':
           title = 'Disconnected';
-          message = 'The other user disconnected.';
+          message = 'The call was disconnected. This may be due to network issues.';
+          shouldAlert = true;
           break;
         case 'user_ended':
         case 'remote_ended':
+        case 'cancelled':
           // Normal end, just go back
+          shouldAlert = false;
           break;
+        default:
+          shouldAlert = false;
       }
 
       // Show alert for error cases, then go back
-      if (['busy', 'rejected', 'no_answer', 'failed', 'insufficient_coins'].includes(endReason)) {
+      if (shouldAlert) {
         Alert.alert(title, message, [
           {
             text: 'OK',
@@ -186,11 +259,16 @@ const CallScreen = ({navigation, route}) => {
   }, [status, endReason, error, dispatch, navigation]);
 
   const handleEndCall = (reason = 'user_ended') => {
-    console.log('📞 Ending call, reason:', reason);
+    console.log('Ending call, reason:', reason);
     
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
+    }
+
+    if (callTimeout) {
+      clearTimeout(callTimeout);
+      setCallTimeout(null);
     }
 
     socketService.endCall(callId);
@@ -214,7 +292,7 @@ const CallScreen = ({navigation, route}) => {
   const getStatusText = () => {
     switch (status) {
       case 'calling':
-        return 'Calling...';
+        return 'Ringing...';
       case 'connecting':
         return 'Connecting...';
       case 'connected':
@@ -240,7 +318,7 @@ const CallScreen = ({navigation, route}) => {
   const getStatusIcon = () => {
     switch (status) {
       case 'calling':
-        return 'phone-outgoing';
+        return 'phone-ring';
       case 'connecting':
         return 'phone-sync';
       case 'connected':
@@ -305,6 +383,11 @@ const CallScreen = ({navigation, route}) => {
             </Text>
           </View>
 
+          {/* Waiting message for calling state */}
+          {status === 'calling' && (
+            <Text style={styles.waitingText}>Waiting for response...</Text>
+          )}
+
           {/* Timer */}
           {(status === 'connected' || (status === 'ended' && duration > 0)) && (
             <View style={styles.timerContainer}>
@@ -362,7 +445,7 @@ const CallScreen = ({navigation, route}) => {
 
           {/* End/Cancel Call Button */}
           {status !== 'ended' && (
-            <TouchableOpacity onPress={() => handleEndCall()} activeOpacity={0.8}>
+            <TouchableOpacity onPress={() => handleEndCall(status === 'calling' ? 'cancelled' : 'user_ended')} activeOpacity={0.8}>
               <LinearGradient
                 colors={COLORS.gradientDanger}
                 style={styles.endCallButton}>
@@ -446,6 +529,11 @@ const styles = StyleSheet.create({
   },
   statusTextWarning: {
     color: COLORS.warning,
+  },
+  waitingText: {
+    fontSize: FONTS.sm,
+    color: COLORS.textMuted,
+    marginTop: SPACING.sm,
   },
   timerContainer: {
     alignItems: 'center',
