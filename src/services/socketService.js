@@ -14,12 +14,6 @@ import {
 
 /**
  * Socket Service for Real-Time Communication
- * 
- * Handles:
- * - User presence (online/offline status)
- * - Call signaling (initiate, answer, reject, end)
- * - WebRTC signaling (offer, answer, ICE candidates)
- * - Real-time updates (coin balance, user status)
  */
 class SocketService {
   constructor() {
@@ -29,7 +23,7 @@ class SocketService {
     this.maxReconnectAttempts = 10;
     this.heartbeatInterval = null;
     
-    // WebRTC callbacks
+    // WebRTC signaling callbacks
     this.onWebRTCOffer = null;
     this.onWebRTCAnswer = null;
     this.onICECandidate = null;
@@ -40,7 +34,7 @@ class SocketService {
    */
   connect(token) {
     if (this.socket?.connected) {
-      console.log('Socket already connected');
+      console.log('🔌 Socket already connected');
       return;
     }
 
@@ -55,14 +49,13 @@ class SocketService {
       reconnectionDelayMax: 5000,
       timeout: 20000,
       forceNew: false,
-      multiplex: true,
     });
 
     this.setupListeners();
   }
 
   /**
-   * Setup event listeners
+   * Setup all socket event listeners
    */
   setupListeners() {
     if (!this.socket) return;
@@ -89,7 +82,6 @@ class SocketService {
       this.stopHeartbeat();
       
       if (reason === 'io server disconnect') {
-        console.log('🔄 Server disconnected, reconnecting...');
         this.socket.connect();
       }
     });
@@ -101,7 +93,6 @@ class SocketService {
 
     this.socket.on('reconnect', (attemptNumber) => {
       console.log('🔄 Reconnected after', attemptNumber, 'attempts');
-      
       const state = store.getState();
       const userId = state.auth.user?.id || state.auth.user?._id;
       if (userId) {
@@ -109,10 +100,7 @@ class SocketService {
       }
     });
 
-    // Heartbeat response
-    this.socket.on('pong', () => {
-      // Connection alive
-    });
+    this.socket.on('pong', () => {});
 
     // ========== USER STATUS ==========
     this.socket.on('women_list_updated', (data) => {
@@ -164,6 +152,7 @@ class SocketService {
 
     // ========== CALL DURATION UPDATE ==========
     this.socket.on('call_duration_update', (data) => {
+      console.log('⏱️ Duration update:', data);
       store.dispatch(
         updateDuration({
           duration: data.duration,
@@ -186,76 +175,46 @@ class SocketService {
       );
     });
 
-    // ========== CALL MISSED ==========
+    // ========== CALL EVENTS ==========
     this.socket.on('call_missed', (data) => {
       console.log('📞 Call missed:', data);
     });
 
-    // ========== CALL REJECTED ==========
     this.socket.on('call_rejected', (data) => {
       console.log('📞 Call rejected:', data);
-      store.dispatch(
-        callFailed({
-          reason: 'rejected',
-          error: data.message || 'Call was declined',
-        }),
-      );
+      store.dispatch(callFailed({reason: 'rejected', error: data.message}));
     });
 
-    // ========== CALL FAILED ==========
     this.socket.on('call_failed', (data) => {
       console.log('📞 Call failed:', data);
-      store.dispatch(
-        callFailed({
-          reason: data.reason || 'failed',
-          error: data.message || 'Call failed',
-        }),
-      );
+      store.dispatch(callFailed({reason: data.reason || 'failed', error: data.message}));
     });
 
-    // ========== USER BUSY ==========
     this.socket.on('user_busy', (data) => {
       console.log('📞 User busy:', data);
-      store.dispatch(
-        callFailed({
-          reason: 'busy',
-          error: data.message || 'User is busy on another call',
-        }),
-      );
+      store.dispatch(callFailed({reason: 'busy', error: data.message}));
     });
 
-    // ========== INSUFFICIENT COINS ==========
     this.socket.on('insufficient_coins', (data) => {
       console.log('💰 Insufficient coins:', data);
-      store.dispatch(
-        callFailed({
-          reason: 'insufficient_coins',
-          error: data.message || 'Not enough coins to make this call',
-        }),
-      );
+      store.dispatch(callFailed({reason: 'insufficient_coins', error: data.message}));
     });
 
-    // ========== NO ANSWER ==========
     this.socket.on('no_answer', (data) => {
       console.log('📞 No answer:', data);
-      store.dispatch(
-        callFailed({
-          reason: 'no_answer',
-          error: 'No answer',
-        }),
-      );
+      store.dispatch(callFailed({reason: 'no_answer', error: 'No answer'}));
     });
 
     // ========== WEBRTC SIGNALING ==========
     this.socket.on('webrtc_offer', (data) => {
-      console.log('🎥 WebRTC offer received');
+      console.log('🎥 WebRTC offer received from:', data.from);
       if (this.onWebRTCOffer) {
         this.onWebRTCOffer(data);
       }
     });
 
     this.socket.on('webrtc_answer', (data) => {
-      console.log('🎥 WebRTC answer received');
+      console.log('🎥 WebRTC answer received from:', data.from);
       if (this.onWebRTCAnswer) {
         this.onWebRTCAnswer(data);
       }
@@ -272,14 +231,11 @@ class SocketService {
   // ========== HEARTBEAT ==========
   startHeartbeat() {
     this.stopHeartbeat();
-    
     this.heartbeatInterval = setInterval(() => {
       if (this.socket?.connected) {
         this.socket.emit('ping');
       }
     }, 25000);
-    
-    console.log('💓 Heartbeat started');
   }
 
   stopHeartbeat() {
@@ -290,10 +246,6 @@ class SocketService {
   }
 
   // ========== CALL METHODS ==========
-
-  /**
-   * Initiate call to woman (for men)
-   */
   initiateCall(womanId) {
     if (!this.socket?.connected) {
       console.error('Socket not connected');
@@ -304,9 +256,6 @@ class SocketService {
     return true;
   }
 
-  /**
-   * Answer incoming call (for women)
-   */
   answerCall(callId) {
     if (!this.socket?.connected) {
       console.error('Socket not connected');
@@ -317,9 +266,6 @@ class SocketService {
     return true;
   }
 
-  /**
-   * Reject incoming call (for women)
-   */
   rejectCall(callId) {
     if (!this.socket?.connected) {
       console.error('Socket not connected');
@@ -330,9 +276,6 @@ class SocketService {
     return true;
   }
 
-  /**
-   * End ongoing call
-   */
   endCall(callId) {
     if (!this.socket?.connected) {
       console.error('Socket not connected');
@@ -343,114 +286,71 @@ class SocketService {
     return true;
   }
 
-  // ========== WEBRTC SIGNALING METHODS ==========
-
-  /**
-   * Send WebRTC offer
-   */
+  // ========== WEBRTC SIGNALING ==========
   sendWebRTCOffer(targetUserId, offer) {
     if (!this.socket?.connected) return false;
-    console.log('🎥 Sending WebRTC offer');
+    console.log('🎥 Sending WebRTC offer to:', targetUserId);
     this.socket.emit('webrtc_offer', {targetUserId, offer});
     return true;
   }
 
-  /**
-   * Send WebRTC answer
-   */
   sendWebRTCAnswer(targetUserId, answer) {
     if (!this.socket?.connected) return false;
-    console.log('🎥 Sending WebRTC answer');
+    console.log('🎥 Sending WebRTC answer to:', targetUserId);
     this.socket.emit('webrtc_answer', {targetUserId, answer});
     return true;
   }
 
-  /**
-   * Send ICE candidate
-   */
   sendICECandidate(targetUserId, candidate) {
     if (!this.socket?.connected) return false;
     this.socket.emit('ice_candidate', {targetUserId, candidate});
     return true;
   }
 
-  /**
-   * Set WebRTC callbacks
-   */
   setWebRTCCallbacks(callbacks) {
     this.onWebRTCOffer = callbacks.onOffer || null;
     this.onWebRTCAnswer = callbacks.onAnswer || null;
     this.onICECandidate = callbacks.onICECandidate || null;
   }
 
-  // ========== AVAILABILITY METHODS ==========
-
-  /**
-   * Set availability (for women)
-   */
+  // ========== AVAILABILITY ==========
   setAvailability(isAvailable) {
-    if (!this.socket?.connected) {
-      console.error('Socket not connected');
-      return false;
-    }
+    if (!this.socket?.connected) return false;
     console.log('🔄 Setting availability:', isAvailable);
     this.socket.emit('set_availability', {isAvailable});
     return true;
   }
 
-  /**
-   * Toggle availability (for women)
-   */
   toggleAvailability(userId, isAvailable) {
-    if (!this.socket?.connected) {
-      console.error('Socket not connected');
-      return false;
-    }
-    console.log('🔄 Toggle availability:', userId, isAvailable);
+    if (!this.socket?.connected) return false;
     this.socket.emit('toggle_availability', {userId, isAvailable});
     return true;
   }
 
-  // ========== UTILITY METHODS ==========
-
-  /**
-   * Check if connected
-   */
+  // ========== UTILITY ==========
   isSocketConnected() {
     return this.socket?.connected || false;
   }
 
-  /**
-   * Get socket ID
-   */
   getSocketId() {
     return this.socket?.id || null;
   }
 
-  /**
-   * Disconnect
-   */
   disconnect() {
     this.stopHeartbeat();
     if (this.socket) {
-      console.log('🔌 Disconnecting socket...');
       this.socket.disconnect();
       this.socket = null;
       this.isConnected = false;
     }
   }
 
-  /**
-   * Reconnect
-   */
   reconnect() {
     this.disconnect();
     const state = store.getState();
     const token = state.auth.token;
     if (token) {
-      setTimeout(() => {
-        this.connect(token);
-      }, 1000);
+      setTimeout(() => this.connect(token), 1000);
     }
   }
 }

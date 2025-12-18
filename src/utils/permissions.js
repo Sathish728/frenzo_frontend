@@ -90,7 +90,7 @@ export const requestMicrophonePermission = async () => {
       PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
       {
         title: 'Microphone Permission',
-        message: 'FrndZone needs microphone access for voice calls. Your calls are never recorded.',
+        message: 'FrndZone needs microphone access for voice calls.',
         buttonNeutral: 'Ask Me Later',
         buttonNegative: 'Cancel',
         buttonPositive: 'Allow',
