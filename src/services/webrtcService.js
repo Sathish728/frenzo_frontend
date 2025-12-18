@@ -8,7 +8,6 @@ import {
   RTCSessionDescription,
   mediaDevices,
 } from 'react-native-webrtc';
-import {logger} from './logger';
 
 // ICE Server configuration for NAT traversal
 const ICE_SERVERS = {
@@ -213,8 +212,6 @@ class WebRTCService {
    */
   toggleSpeaker() {
     this.isSpeakerOn = !this.isSpeakerOn;
-    // Note: Actual speaker toggle requires react-native-incall-manager
-    // This is a placeholder for the state
     console.log('Speaker toggled:', this.isSpeakerOn);
     return this.isSpeakerOn;
   }
