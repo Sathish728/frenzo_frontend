@@ -39,6 +39,7 @@ const IncomingCallScreen = ({navigation}) => {
   );
 
   const timerRef = useRef(null);
+  const coinEarningRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const slideAnim = useRef(new Animated.Value(0)).current;
   const ringAnim = useRef(new Animated.Value(0)).current;
@@ -121,15 +122,24 @@ const IncomingCallScreen = ({navigation}) => {
     };
   }, [status, dispatch]);
 
-  // Calculate earnings every minute
+  // Coin earning every 60 seconds
   useEffect(() => {
-    if (status === 'connected' && duration > 0 && duration % 60 === 0) {
-      const earned = CALL_RATES.coinsPerMinute;
-      setCoinsEarned((prev) => prev + earned);
-      dispatch(updateCoins((user?.coins || 0) + earned));
-      console.log(`📞 IncomingCall: Earned ${earned} coins (total: ${coinsEarned + earned})`);
+    if (status === 'connected') {
+      coinEarningRef.current = setInterval(() => {
+        const earned = CALL_RATES.coinsPerMinute;
+        setCoinsEarned((prev) => prev + earned);
+        dispatch(updateCoins((user?.coins || 0) + earned));
+        console.log(`📞 IncomingCall: Earned ${earned} coins`);
+      }, 60000);
+
+      return () => {
+        if (coinEarningRef.current) {
+          clearInterval(coinEarningRef.current);
+          coinEarningRef.current = null;
+        }
+      };
     }
-  }, [duration, status, dispatch, user?.coins]);
+  }, [status, dispatch, user?.coins]);
 
   // Handle call status changes
   useEffect(() => {
@@ -140,6 +150,10 @@ const IncomingCallScreen = ({navigation}) => {
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
+      }
+      if (coinEarningRef.current) {
+        clearInterval(coinEarningRef.current);
+        coinEarningRef.current = null;
       }
       
       const timeout = setTimeout(() => {
@@ -157,6 +171,17 @@ const IncomingCallScreen = ({navigation}) => {
     }
   }, [status, remoteUser, navigation]);
 
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      console.log('📞 IncomingCall: Unmounting, cleaning up...');
+      Vibration.cancel();
+      webRTCService.cleanup();
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (coinEarningRef.current) clearInterval(coinEarningRef.current);
+    };
+  }, []);
+
   const handleAnswer = useCallback(async () => {
     console.log('📞 IncomingCall: Answering call:', callId);
     Vibration.cancel();
@@ -168,56 +193,53 @@ const IncomingCallScreen = ({navigation}) => {
       return;
     }
 
-    // Setup WebRTC
+    // Setup WebRTC FIRST (as receiver)
     webRTCService.setSocketService(socketService);
     
     webRTCService.setCallbacks({
       onRemoteStream: (stream) => {
-        console.log('📞 IncomingCall: Remote audio stream received');
+        console.log('📞 IncomingCall: Remote audio stream received!');
         setAudioConnected(true);
       },
       onConnectionStateChange: (state) => {
-        console.log('📞 IncomingCall: Connection state:', state);
+        console.log('📞 IncomingCall: WebRTC connection state:', state);
         if (state === 'connected' || state === 'completed') {
           setAudioConnected(true);
+          Vibration.vibrate(100);
         }
       },
       onCallConnected: () => {
-        console.log('📞 IncomingCall: Call connected via WebRTC');
+        console.log('📞 IncomingCall: WebRTC call connected!');
         setAudioConnected(true);
-        Vibration.vibrate(100);
+        dispatch(callConnected());
       },
       onCallEnded: (reason) => {
-        console.log('📞 IncomingCall: Call ended:', reason);
+        console.log('📞 IncomingCall: WebRTC call ended:', reason);
         handleEndCall(reason);
       },
     });
 
-    // Initialize as receiver (wait for offer)
+    // Initialize as receiver - this prepares to receive offer from caller
     const callerId = remoteUser?._id;
     if (callerId) {
-      console.log('📞 IncomingCall: Initializing WebRTC as receiver');
-      const initialized = await webRTCService.initializeAsReceiverCall(callerId, callId);
+      console.log('📞 IncomingCall: Initializing WebRTC as RECEIVER from:', callerId);
+      const initialized = await webRTCService.initializeAsReceiver(callerId, callId);
       setWebrtcInitialized(initialized);
+      
+      if (!initialized) {
+        console.error('📞 IncomingCall: Failed to initialize WebRTC');
+      }
     }
 
-    // Notify server that we're answering
+    // Notify server that we're answering - this triggers caller to send WebRTC offer
     const success = socketService.answerCall(callId);
     
     if (success) {
       dispatch(callAnswered({callId}));
-      
-      // The actual callConnected will be dispatched when WebRTC establishes connection
-      // But we set a fallback just in case
-      setTimeout(() => {
-        if (status !== 'connected') {
-          dispatch(callConnected());
-        }
-      }, 2000);
     } else {
       Alert.alert('Error', 'Failed to answer call. Please try again.');
     }
-  }, [callId, remoteUser, dispatch, status]);
+  }, [callId, remoteUser, dispatch]);
 
   const handleDecline = useCallback(() => {
     console.log('📞 IncomingCall: Declining call:', callId);
@@ -234,6 +256,10 @@ const IncomingCallScreen = ({navigation}) => {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
+    if (coinEarningRef.current) {
+      clearInterval(coinEarningRef.current);
+      coinEarningRef.current = null;
+    }
     
     webRTCService.cleanup();
     socketService.endCall(callId);
@@ -241,12 +267,12 @@ const IncomingCallScreen = ({navigation}) => {
   }, [callId, duration, coinsEarned, dispatch]);
 
   const handleToggleMute = useCallback(() => {
-    const newMuteState = webRTCService.toggleMute();
+    webRTCService.toggleMute();
     dispatch(toggleMute());
   }, [dispatch]);
 
   const handleToggleSpeaker = useCallback(() => {
-    const newSpeakerState = webRTCService.toggleSpeaker();
+    webRTCService.toggleSpeaker();
     dispatch(toggleSpeaker());
   }, [dispatch]);
 

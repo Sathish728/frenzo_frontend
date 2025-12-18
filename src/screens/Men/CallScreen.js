@@ -17,6 +17,7 @@ import {useDispatch, useSelector} from 'react-redux';
 import {COLORS, FONTS, SPACING, RADIUS, CALL_RATES} from '../../config/constants';
 import {
   callConnected,
+  callAnswered,
   incrementDuration,
   toggleMute,
   toggleSpeaker,
@@ -48,18 +49,18 @@ const CallScreen = ({navigation, route}) => {
   } = useSelector((state) => state.call);
 
   const timerRef = useRef(null);
+  const coinDeductionRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const ringAnim = useRef(new Animated.Value(0)).current;
   const [localCoinsUsed, setLocalCoinsUsed] = useState(0);
   const [callTimeout, setCallTimeout] = useState(null);
   const [audioConnected, setAudioConnected] = useState(false);
   const [webrtcInitialized, setWebrtcInitialized] = useState(false);
+  const [callStartTime, setCallStartTime] = useState(null);
 
-  // Initialize WebRTC and request permissions
+  // Request permissions on mount
   useEffect(() => {
-    const initializeCall = async () => {
-      console.log('📞 CallScreen: Initializing...');
-      
+    const checkPermissions = async () => {
       const permissions = await requestCallPermissions();
       if (!permissions.microphone) {
         Alert.alert(
@@ -67,62 +68,65 @@ const CallScreen = ({navigation, route}) => {
           'Cannot make voice calls without microphone access.',
           [{text: 'OK', onPress: () => navigation.goBack()}]
         );
-        return;
       }
+    };
+    checkPermissions();
+  }, []);
 
-      // Setup WebRTC with socket service
-      webRTCService.setSocketService(socketService);
-      
-      // Set WebRTC callbacks
-      webRTCService.setCallbacks({
-        onRemoteStream: (stream) => {
-          console.log('📞 CallScreen: Remote audio stream received');
-          setAudioConnected(true);
-        },
-        onConnectionStateChange: (state) => {
-          console.log('📞 CallScreen: Connection state:', state);
-          if (state === 'connected' || state === 'completed') {
-            setAudioConnected(true);
-          }
-        },
-        onCallConnected: () => {
-          console.log('📞 CallScreen: Call connected via WebRTC');
+  // Setup WebRTC when call is answered (we are the caller)
+  useEffect(() => {
+    if (status === 'connecting' || status === 'connected') {
+      if (!webrtcInitialized) {
+        initializeWebRTC();
+      }
+    }
+  }, [status]);
+
+  const initializeWebRTC = async () => {
+    const targetUserId = woman?._id || remoteUser?._id;
+    if (!targetUserId) {
+      console.error('📞 CallScreen: No target user ID');
+      return;
+    }
+
+    console.log('📞 CallScreen: Initializing WebRTC as CALLER to:', targetUserId);
+    
+    // Setup WebRTC with socket service
+    webRTCService.setSocketService(socketService);
+    
+    // Set callbacks
+    webRTCService.setCallbacks({
+      onRemoteStream: (stream) => {
+        console.log('📞 CallScreen: Remote audio stream received!');
+        setAudioConnected(true);
+      },
+      onConnectionStateChange: (state) => {
+        console.log('📞 CallScreen: WebRTC connection state:', state);
+        if (state === 'connected' || state === 'completed') {
           setAudioConnected(true);
           Vibration.vibrate(100);
-        },
-        onCallEnded: (reason) => {
-          console.log('📞 CallScreen: Call ended:', reason);
-          handleEndCall(reason);
-        },
-      });
-
-      // Initialize as caller
-      const targetUserId = woman?._id || remoteUser?._id;
-      if (targetUserId) {
-        console.log('📞 CallScreen: Initializing WebRTC as caller to:', targetUserId);
-        const initialized = await webRTCService.initializeAsCallerCall(targetUserId, callId);
-        setWebrtcInitialized(initialized);
-        
-        if (!initialized) {
-          console.error('📞 CallScreen: Failed to initialize WebRTC');
         }
-      }
-    };
+      },
+      onCallConnected: () => {
+        console.log('📞 CallScreen: WebRTC call connected!');
+        setAudioConnected(true);
+        dispatch(callConnected());
+      },
+      onCallEnded: (reason) => {
+        console.log('📞 CallScreen: WebRTC call ended:', reason);
+        handleEndCall(reason);
+      },
+    });
 
-    initializeCall();
-
-    // Cleanup on unmount
-    return () => {
-      console.log('📞 CallScreen: Cleanup');
-      webRTCService.cleanup();
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-      }
-      if (callTimeout) {
-        clearTimeout(callTimeout);
-      }
-    };
-  }, []);
+    // Initialize as caller - this will create offer and send it
+    const initialized = await webRTCService.initializeAsCaller(targetUserId, callId);
+    setWebrtcInitialized(initialized);
+    
+    if (!initialized) {
+      console.error('📞 CallScreen: Failed to initialize WebRTC');
+      Alert.alert('Error', 'Failed to establish audio connection');
+    }
+  };
 
   // Handle back button
   useEffect(() => {
@@ -205,6 +209,7 @@ const CallScreen = ({navigation, route}) => {
   useEffect(() => {
     if (status === 'connected') {
       console.log('📞 CallScreen: Starting call timer');
+      setCallStartTime(Date.now());
       
       timerRef.current = setInterval(() => {
         dispatch(incrementDuration());
@@ -219,32 +224,54 @@ const CallScreen = ({navigation, route}) => {
     };
   }, [status, dispatch]);
 
-  // Coin deduction every minute
+  // Coin deduction every 60 seconds
   useEffect(() => {
-    if (status === 'connected' && duration > 0 && duration % 60 === 0) {
-      const coinsToDeduct = CALL_RATES.coinsPerMinute;
-      const currentCoins = user?.coins || 0;
+    if (status === 'connected') {
+      // First deduction after 60 seconds
+      coinDeductionRef.current = setInterval(() => {
+        const coinsToDeduct = CALL_RATES.coinsPerMinute;
+        const currentCoins = user?.coins || 0;
 
-      console.log(`📞 CallScreen: Deducting ${coinsToDeduct} coins (duration: ${duration}s)`);
+        console.log(`📞 CallScreen: Coin check - have ${currentCoins}, need ${coinsToDeduct}`);
 
-      if (currentCoins < coinsToDeduct) {
-        handleEndCall('insufficient_coins');
-        return;
-      }
+        if (currentCoins < coinsToDeduct) {
+          console.log('📞 CallScreen: Insufficient coins, ending call');
+          handleEndCall('insufficient_coins');
+          return;
+        }
 
-      dispatch(updateCoins(currentCoins - coinsToDeduct));
-      setLocalCoinsUsed(prev => prev + coinsToDeduct);
+        // Deduct coins
+        dispatch(updateCoins(currentCoins - coinsToDeduct));
+        setLocalCoinsUsed(prev => prev + coinsToDeduct);
+        console.log(`📞 CallScreen: Deducted ${coinsToDeduct} coins`);
+      }, 60000);
+
+      return () => {
+        if (coinDeductionRef.current) {
+          clearInterval(coinDeductionRef.current);
+          coinDeductionRef.current = null;
+        }
+      };
     }
-  }, [duration, status, user?.coins, dispatch]);
+  }, [status, user?.coins, dispatch]);
 
   // Handle call status changes
   useEffect(() => {
     if (status === 'ended') {
+      // Clear all timers
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
+      if (coinDeductionRef.current) {
+        clearInterval(coinDeductionRef.current);
+        coinDeductionRef.current = null;
+      }
+      if (callTimeout) {
+        clearTimeout(callTimeout);
+      }
 
+      // Cleanup WebRTC
       webRTCService.cleanup();
 
       let message = 'Call ended';
@@ -304,17 +331,31 @@ const CallScreen = ({navigation, route}) => {
     }
   }, [status, endReason, error, dispatch, navigation]);
 
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      console.log('📞 CallScreen: Unmounting, cleaning up...');
+      webRTCService.cleanup();
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (coinDeductionRef.current) clearInterval(coinDeductionRef.current);
+      if (callTimeout) clearTimeout(callTimeout);
+    };
+  }, []);
+
   const handleEndCall = useCallback((reason = 'user_ended') => {
     console.log('📞 CallScreen: Ending call, reason:', reason);
     
+    // Clear timers
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
-
+    if (coinDeductionRef.current) {
+      clearInterval(coinDeductionRef.current);
+      coinDeductionRef.current = null;
+    }
     if (callTimeout) {
       clearTimeout(callTimeout);
-      setCallTimeout(null);
     }
 
     // Cleanup WebRTC
@@ -327,15 +368,13 @@ const CallScreen = ({navigation, route}) => {
   }, [callId, callTimeout, duration, localCoinsUsed, dispatch]);
 
   const handleToggleMute = useCallback(() => {
-    const newMuteState = webRTCService.toggleMute();
+    webRTCService.toggleMute();
     dispatch(toggleMute());
-    console.log('📞 CallScreen: Mute toggled:', newMuteState);
   }, [dispatch]);
 
   const handleToggleSpeaker = useCallback(() => {
-    const newSpeakerState = webRTCService.toggleSpeaker();
+    webRTCService.toggleSpeaker();
     dispatch(toggleSpeaker());
-    console.log('📞 CallScreen: Speaker toggled:', newSpeakerState);
   }, [dispatch]);
 
   const callUser = woman || remoteUser;

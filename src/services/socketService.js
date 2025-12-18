@@ -14,6 +14,7 @@ import {
 
 /**
  * Socket Service for Real-Time Communication
+ * FIXED VERSION - Proper WebRTC signaling
  */
 class SocketService {
   constructor() {
@@ -138,7 +139,7 @@ class SocketService {
       );
     });
 
-    // ========== CALL ANSWERED (for caller) ==========
+    // ========== CALL ANSWERED (for caller - men) ==========
     this.socket.on('call_answered', (data) => {
       console.log('📞 Call answered:', data);
       store.dispatch(callAnswered({callId: data.callId}));
@@ -205,16 +206,16 @@ class SocketService {
       store.dispatch(callFailed({reason: 'no_answer', error: 'No answer'}));
     });
 
-    // ========== WEBRTC SIGNALING ==========
+    // ========== WEBRTC SIGNALING - CRITICAL FOR AUDIO ==========
     this.socket.on('webrtc_offer', (data) => {
-      console.log('🎥 WebRTC offer received from:', data.from);
+      console.log('🎥 WebRTC OFFER received from:', data.fromUserId || data.from);
       if (this.onWebRTCOffer) {
         this.onWebRTCOffer(data);
       }
     });
 
     this.socket.on('webrtc_answer', (data) => {
-      console.log('🎥 WebRTC answer received from:', data.from);
+      console.log('🎥 WebRTC ANSWER received from:', data.fromUserId || data.from);
       if (this.onWebRTCAnswer) {
         this.onWebRTCAnswer(data);
       }
@@ -286,23 +287,32 @@ class SocketService {
     return true;
   }
 
-  // ========== WEBRTC SIGNALING ==========
+  // ========== WEBRTC SIGNALING METHODS ==========
   sendWebRTCOffer(targetUserId, offer) {
-    if (!this.socket?.connected) return false;
-    console.log('🎥 Sending WebRTC offer to:', targetUserId);
+    if (!this.socket?.connected) {
+      console.error('Socket not connected for WebRTC offer');
+      return false;
+    }
+    console.log('🎥 SENDING WebRTC offer to:', targetUserId);
     this.socket.emit('webrtc_offer', {targetUserId, offer});
     return true;
   }
 
   sendWebRTCAnswer(targetUserId, answer) {
-    if (!this.socket?.connected) return false;
-    console.log('🎥 Sending WebRTC answer to:', targetUserId);
+    if (!this.socket?.connected) {
+      console.error('Socket not connected for WebRTC answer');
+      return false;
+    }
+    console.log('🎥 SENDING WebRTC answer to:', targetUserId);
     this.socket.emit('webrtc_answer', {targetUserId, answer});
     return true;
   }
 
   sendICECandidate(targetUserId, candidate) {
-    if (!this.socket?.connected) return false;
+    if (!this.socket?.connected) {
+      console.error('Socket not connected for ICE candidate');
+      return false;
+    }
     this.socket.emit('ice_candidate', {targetUserId, candidate});
     return true;
   }
