@@ -1,38 +1,40 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Internet permission -->
+    <!-- Internet & Network -->
     <uses-permission android:name="android.permission.INTERNET" />
-    
-    <!-- Network state -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     
-    <!-- Audio/Call permissions -->
+    <!-- Voice Call - Microphone for LIVE audio (NOT recording) -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-    <uses-permission android:name="android.permission.BLUETOOTH" />
+    
+    <!-- Bluetooth Audio -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     
     <!-- Camera (for future video calls) -->
     <uses-permission android:name="android.permission.CAMERA" />
     
-    <!-- Vibration -->
+    <!-- Vibration for incoming calls -->
     <uses-permission android:name="android.permission.VIBRATE" />
     
     <!-- Keep screen on during calls -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     
-    <!-- Phone state (to detect if user is on a phone call) -->
+    <!-- Phone state (to pause call if user gets phone call) -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     
-    <!-- For receiving SMS OTP (auto-read) - Optional -->
+    <!-- SMS OTP Auto-read (Optional) -->
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
     <uses-permission android:name="android.permission.READ_SMS" />
     
     <!-- Foreground service for calls -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     
-    <!-- Post notifications (Android 13+) -->
+    <!-- Notifications (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Query UPI apps (Android 11+) -->

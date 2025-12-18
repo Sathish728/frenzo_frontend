@@ -1,4 +1,4 @@
-import React, {useEffect, useRef, useState} from 'react';
+import React, {useEffect, useRef, useState, useCallback} from 'react';
 import {
   View,
   Text,
@@ -6,8 +6,8 @@ import {
   TouchableOpacity,
   Vibration,
   Animated,
-  Alert,
   BackHandler,
+  Platform,
 } from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
@@ -26,8 +26,8 @@ import {
 } from '../../redux/slices/callSlice';
 import {updateCoins} from '../../redux/slices/authSlice';
 import socketService from '../../services/socketService';
+import {requestCallPermissions} from '../../utils/permissions';
 import Avatar from '../../components/common/Avatar';
-import CallTimer from '../../components/CallTimer';
 import {formatNumber} from '../../utils/helpers';
 
 const IncomingCallScreen = ({navigation}) => {
@@ -39,21 +39,16 @@ const IncomingCallScreen = ({navigation}) => {
 
   const timerRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const slideAnim = useRef(new Animated.Value(0)).current;
   const ringAnim = useRef(new Animated.Value(0)).current;
   const [coinsEarned, setCoinsEarned] = useState(0);
+  const [audioConnected, setAudioConnected] = useState(false);
 
-  // Handle back button - prevent going back during call
+  // Handle back button
   useEffect(() => {
     const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
       if (status === 'connected') {
-        Alert.alert(
-          'End Call?',
-          'Are you sure you want to end this call?',
-          [
-            {text: 'Cancel', style: 'cancel'},
-            {text: 'End Call', onPress: handleEndCall, style: 'destructive'},
-          ]
-        );
+        handleEndCall();
         return true;
       }
       if (status === 'ringing') {
@@ -66,48 +61,54 @@ const IncomingCallScreen = ({navigation}) => {
     return () => backHandler.remove();
   }, [status]);
 
-  // Vibration pattern for incoming call
+  // Vibration and animations for incoming call
   useEffect(() => {
     if (status === 'ringing') {
-      // Vibration pattern: wait 0ms, vibrate 500ms, wait 200ms, vibrate 500ms
-      const pattern = [0, 500, 200, 500, 200, 500];
-      
-      // Start vibration loop
+      // Vibration pattern
+      const pattern = [0, 400, 200, 400, 200, 400];
       const vibrationInterval = setInterval(() => {
         Vibration.vibrate(pattern);
-      }, 2000);
+      }, 1800);
 
-      // Pulse animation for avatar
+      // Pulse animation
       Animated.loop(
         Animated.sequence([
           Animated.timing(pulseAnim, {
-            toValue: 1.15,
-            duration: 800,
+            toValue: 1.2,
+            duration: 700,
             useNativeDriver: true,
           }),
           Animated.timing(pulseAnim, {
             toValue: 1,
-            duration: 800,
+            duration: 700,
             useNativeDriver: true,
           }),
         ]),
       ).start();
 
-      // Ring animation for call button
+      // Ring animation
       Animated.loop(
         Animated.sequence([
           Animated.timing(ringAnim, {
             toValue: 1,
-            duration: 500,
+            duration: 600,
             useNativeDriver: true,
           }),
           Animated.timing(ringAnim, {
             toValue: 0,
-            duration: 500,
+            duration: 600,
             useNativeDriver: true,
           }),
         ]),
       ).start();
+
+      // Slide animation for buttons
+      Animated.spring(slideAnim, {
+        toValue: 1,
+        tension: 50,
+        friction: 8,
+        useNativeDriver: true,
+      }).start();
 
       return () => {
         clearInterval(vibrationInterval);
@@ -123,6 +124,9 @@ const IncomingCallScreen = ({navigation}) => {
   // Timer for connected call
   useEffect(() => {
     if (status === 'connected') {
+      setAudioConnected(true);
+      Vibration.vibrate(100);
+      
       timerRef.current = setInterval(() => {
         dispatch(incrementDuration());
       }, 1000);
@@ -154,7 +158,6 @@ const IncomingCallScreen = ({navigation}) => {
         timerRef.current = null;
       }
       
-      // Show summary and go back
       const timeout = setTimeout(() => {
         dispatch(resetCall());
         navigation.goBack();
@@ -164,42 +167,48 @@ const IncomingCallScreen = ({navigation}) => {
     }
   }, [status, dispatch, navigation]);
 
-  // Handle if call fails or is rejected
   useEffect(() => {
     if (status === 'idle' && !remoteUser) {
-      // Call was reset, go back
       navigation.goBack();
     }
   }, [status, remoteUser, navigation]);
 
-  const handleAnswer = () => {
+  const handleAnswer = useCallback(async () => {
     console.log('📞 Answering call:', callId);
     Vibration.cancel();
     
-    // Send answer to server
+    // Request permissions before answering
+    const permissions = await requestCallPermissions();
+    if (!permissions.microphone) {
+      Alert.alert(
+        'Microphone Required',
+        'Cannot answer calls without microphone access.'
+      );
+      return;
+    }
+    
     const success = socketService.answerCall(callId);
     
     if (success) {
       dispatch(callAnswered({callId}));
       
-      // Simulate connection (server will confirm)
       setTimeout(() => {
         dispatch(callConnected());
       }, 1000);
     } else {
       Alert.alert('Error', 'Failed to answer call. Please try again.');
     }
-  };
+  }, [callId, dispatch]);
 
-  const handleDecline = () => {
+  const handleDecline = useCallback(() => {
     console.log('📞 Declining call:', callId);
     Vibration.cancel();
     
     socketService.rejectCall(callId);
     dispatch(endCall({reason: 'declined'}));
-  };
+  }, [callId, dispatch]);
 
-  const handleEndCall = () => {
+  const handleEndCall = useCallback(() => {
     console.log('📞 Ending call:', callId);
     
     if (timerRef.current) {
@@ -209,16 +218,21 @@ const IncomingCallScreen = ({navigation}) => {
     
     socketService.endCall(callId);
     dispatch(endCall({reason: 'user_ended', duration, coinsEarned}));
-  };
+  }, [callId, duration, coinsEarned, dispatch]);
 
-  const handleToggleMute = () => {
+  const handleToggleMute = useCallback(() => {
     dispatch(toggleMute());
-    // TODO: Actually mute microphone when WebRTC is implemented
-  };
+  }, [dispatch]);
 
-  const handleToggleSpeaker = () => {
+  const handleToggleSpeaker = useCallback(() => {
     dispatch(toggleSpeaker());
-    // TODO: Actually toggle speaker when WebRTC is implemented
+  }, [dispatch]);
+
+  // Format duration
+  const formatDuration = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
   const getStatusText = () => {
@@ -228,7 +242,7 @@ const IncomingCallScreen = ({navigation}) => {
       case 'connecting':
         return 'Connecting...';
       case 'connected':
-        return 'Connected';
+        return audioConnected ? 'Connected' : 'Connecting Audio...';
       case 'ended':
         return 'Call Ended';
       default:
@@ -238,70 +252,107 @@ const IncomingCallScreen = ({navigation}) => {
 
   const answerButtonScale = ringAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [1, 1.1],
+    outputRange: [1, 1.15],
+  });
+
+  const slideTranslate = slideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [100, 0],
   });
 
   const renderRingingControls = () => (
-    <View style={styles.ringingControls}>
-      {/* Decline Button */}
-      <TouchableOpacity onPress={handleDecline} activeOpacity={0.8}>
-        <LinearGradient
-          colors={COLORS.gradientDanger}
-          style={styles.controlCircle}>
-          <Icon name="phone-hangup" size={32} color={COLORS.white} />
-        </LinearGradient>
-        <Text style={styles.controlLabel}>Decline</Text>
-      </TouchableOpacity>
-
-      {/* Answer Button */}
-      <Animated.View style={{transform: [{scale: answerButtonScale}]}}>
-        <TouchableOpacity onPress={handleAnswer} activeOpacity={0.8}>
+    <Animated.View 
+      style={[
+        styles.ringingControls,
+        {transform: [{translateY: slideTranslate}]}
+      ]}>
+      <Text style={styles.swipeHint}>Swipe up to answer</Text>
+      
+      <View style={styles.buttonsRow}>
+        {/* Decline Button */}
+        <TouchableOpacity onPress={handleDecline} activeOpacity={0.8}>
           <LinearGradient
-            colors={COLORS.gradientSecondary}
-            style={styles.controlCircle}>
-            <Icon name="phone" size={32} color={COLORS.white} />
+            colors={['#ff416c', '#ff4b2b']}
+            style={styles.actionButton}>
+            <Icon name="phone-hangup" size={32} color={COLORS.white} />
           </LinearGradient>
-          <Text style={styles.controlLabel}>Answer</Text>
+          <Text style={styles.actionLabel}>Decline</Text>
         </TouchableOpacity>
-      </Animated.View>
-    </View>
+
+        {/* Answer Button */}
+        <Animated.View style={{transform: [{scale: answerButtonScale}]}}>
+          <TouchableOpacity onPress={handleAnswer} activeOpacity={0.8}>
+            <LinearGradient
+              colors={['#11998e', '#38ef7d']}
+              style={styles.actionButton}>
+              <Icon name="phone" size={32} color={COLORS.white} />
+            </LinearGradient>
+            <Text style={[styles.actionLabel, {color: COLORS.success}]}>Answer</Text>
+          </TouchableOpacity>
+        </Animated.View>
+      </View>
+    </Animated.View>
   );
 
   const renderConnectedControls = () => (
     <View style={styles.connectedControls}>
+      {/* Earnings Display */}
+      <View style={styles.earningsDisplay}>
+        <Icon name="circle-multiple" size={18} color={COLORS.accent} />
+        <Text style={styles.earningsText}>+{formatNumber(coinsEarned)} earned</Text>
+      </View>
+
       <View style={styles.controlsRow}>
+        {/* Mute Button */}
         <TouchableOpacity
           onPress={handleToggleMute}
-          style={[styles.controlButton, isMuted && styles.controlButtonActive]}
+          style={styles.controlButton}
           activeOpacity={0.7}>
-          <Icon
-            name={isMuted ? 'microphone-off' : 'microphone'}
-            size={28}
-            color={isMuted ? COLORS.white : COLORS.text}
-          />
-          <Text style={[styles.smallLabel, isMuted && styles.smallLabelActive]}>
+          <View style={[styles.controlIconBg, isMuted && styles.controlIconBgActive]}>
+            <Icon
+              name={isMuted ? 'microphone-off' : 'microphone'}
+              size={26}
+              color={isMuted ? COLORS.white : COLORS.text}
+            />
+          </View>
+          <Text style={[styles.controlLabel, isMuted && styles.controlLabelActive]}>
             {isMuted ? 'Unmute' : 'Mute'}
           </Text>
         </TouchableOpacity>
 
+        {/* Speaker Button */}
         <TouchableOpacity
           onPress={handleToggleSpeaker}
-          style={[styles.controlButton, isSpeakerOn && styles.controlButtonActive]}
+          style={styles.controlButton}
           activeOpacity={0.7}>
-          <Icon
-            name={isSpeakerOn ? 'volume-high' : 'volume-medium'}
-            size={28}
-            color={isSpeakerOn ? COLORS.white : COLORS.text}
-          />
-          <Text style={[styles.smallLabel, isSpeakerOn && styles.smallLabelActive]}>
+          <View style={[styles.controlIconBg, isSpeakerOn && styles.controlIconBgActive]}>
+            <Icon
+              name={isSpeakerOn ? 'volume-high' : 'volume-medium'}
+              size={26}
+              color={isSpeakerOn ? COLORS.white : COLORS.text}
+            />
+          </View>
+          <Text style={[styles.controlLabel, isSpeakerOn && styles.controlLabelActive]}>
             Speaker
           </Text>
         </TouchableOpacity>
+
+        {/* Add Contact (placeholder) */}
+        <TouchableOpacity
+          style={styles.controlButton}
+          activeOpacity={0.7}
+          disabled>
+          <View style={styles.controlIconBg}>
+            <Icon name="account-plus" size={26} color={COLORS.textMuted} />
+          </View>
+          <Text style={styles.controlLabel}>Add</Text>
+        </TouchableOpacity>
       </View>
 
-      <TouchableOpacity onPress={handleEndCall} activeOpacity={0.8}>
+      {/* End Call Button */}
+      <TouchableOpacity onPress={handleEndCall} activeOpacity={0.8} style={styles.endCallWrapper}>
         <LinearGradient
-          colors={COLORS.gradientDanger}
+          colors={['#ff416c', '#ff4b2b']}
           style={styles.endCallButton}>
           <Icon name="phone-hangup" size={32} color={COLORS.white} />
         </LinearGradient>
@@ -312,13 +363,19 @@ const IncomingCallScreen = ({navigation}) => {
 
   const renderEndedSummary = () => (
     <View style={styles.endedSummary}>
-      <Icon name="check-circle" size={48} color={COLORS.success} />
-      <Text style={styles.endedTitle}>Call Ended</Text>
-      <Text style={styles.endedDuration}>Duration: {Math.floor(duration / 60)}:{(duration % 60).toString().padStart(2, '0')}</Text>
+      <View style={styles.summaryIconContainer}>
+        <Icon name="check-circle" size={50} color={COLORS.success} />
+      </View>
+      <Text style={styles.summaryTitle}>Call Ended</Text>
+      <Text style={styles.summaryDuration}>
+        Duration: {formatDuration(duration)}
+      </Text>
       {coinsEarned > 0 && (
-        <View style={styles.earningsRow}>
-          <Icon name="circle-multiple" size={20} color={COLORS.accent} />
-          <Text style={styles.earnedText}>+{formatNumber(coinsEarned)} coins earned</Text>
+        <View style={styles.summaryEarnings}>
+          <Icon name="circle-multiple" size={22} color={COLORS.accent} />
+          <Text style={styles.summaryEarningsText}>
+            +{formatNumber(coinsEarned)} coins earned!
+          </Text>
         </View>
       )}
     </View>
@@ -326,52 +383,76 @@ const IncomingCallScreen = ({navigation}) => {
 
   return (
     <LinearGradient
-      colors={[COLORS.background, COLORS.surface]}
+      colors={status === 'ringing' 
+        ? ['#1a1a2e', '#16213e', '#0f3460']
+        : [COLORS.background, '#1a1a2e', COLORS.surface]}
       style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
-        {/* Earnings Badge (for connected calls) */}
-        {status === 'connected' && (
-          <View style={styles.earningsBadge}>
-            <Icon name="circle-multiple" size={16} color={COLORS.accent} />
-            <Text style={styles.earningsText}>
-              +{formatNumber(coinsEarned)} earned
-            </Text>
-          </View>
-        )}
-
         {/* Main Content */}
         <View style={styles.content}>
           {status === 'ended' ? (
             renderEndedSummary()
           ) : (
             <>
+              {/* Calling indicator for ringing */}
+              {status === 'ringing' && (
+                <View style={styles.incomingIndicator}>
+                  <Animated.View style={{opacity: ringAnim}}>
+                    <Icon name="phone-incoming" size={24} color={COLORS.success} />
+                  </Animated.View>
+                  <Text style={styles.incomingText}>Incoming Voice Call</Text>
+                </View>
+              )}
+
               {/* Avatar */}
-              <Animated.View style={{transform: [{scale: pulseAnim}]}}>
+              <Animated.View style={[styles.avatarWrapper, {transform: [{scale: pulseAnim}]}]}>
                 <View style={styles.avatarContainer}>
+                  {status === 'ringing' && (
+                    <>
+                      <Animated.View style={[styles.ringOuter, {opacity: ringAnim}]} />
+                      <Animated.View style={[styles.ringMiddle, {opacity: ringAnim}]} />
+                      <Animated.View style={[styles.ringInner, {opacity: ringAnim}]} />
+                    </>
+                  )}
+                  
                   <Avatar
                     name={remoteUser?.name}
                     imageUrl={remoteUser?.profileImage}
-                    size={140}
+                    size={130}
                   />
+                  
                   {status === 'connected' && (
                     <View style={styles.connectedBadge}>
-                      <Icon name="phone-in-talk" size={20} color={COLORS.white} />
+                      <Icon name="phone-in-talk" size={18} color={COLORS.white} />
                     </View>
                   )}
                 </View>
               </Animated.View>
 
-              {/* Name & Status */}
+              {/* Name */}
               <Text style={styles.userName}>{remoteUser?.name || 'Unknown Caller'}</Text>
+              
+              {/* Status */}
               <Text style={styles.statusText}>{getStatusText()}</Text>
 
               {/* Timer */}
-              {(status === 'connected') && (
-                <View style={styles.timerContainer}>
-                  <CallTimer duration={duration} isActive={status === 'connected'} />
-                  <Text style={styles.rateText}>
-                    Earning {CALL_RATES.coinsPerMinute} coins/min
-                  </Text>
+              {status === 'connected' && (
+                <View style={styles.timerSection}>
+                  <Text style={styles.timerText}>{formatDuration(duration)}</Text>
+                  <View style={styles.rateIndicator}>
+                    <Icon name="trending-up" size={14} color={COLORS.success} />
+                    <Text style={styles.rateText}>
+                      Earning {CALL_RATES.coinsPerMinute} coins/min
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              {/* Audio Quality */}
+              {status === 'connected' && audioConnected && (
+                <View style={styles.audioQuality}>
+                  <View style={styles.qualityDot} />
+                  <Text style={styles.qualityText}>Audio Connected</Text>
                 </View>
               )}
             </>
@@ -393,39 +474,66 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
   },
-  earningsBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'center',
-    backgroundColor: COLORS.surface,
-    paddingVertical: SPACING.xs,
-    paddingHorizontal: SPACING.md,
-    borderRadius: RADIUS.full,
-    marginTop: SPACING.md,
-  },
-  earningsText: {
-    fontSize: FONTS.sm,
-    color: COLORS.accent,
-    fontWeight: '600',
-    marginLeft: SPACING.xs,
-  },
   content: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: SPACING.lg,
   },
+  incomingIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.lg,
+    borderRadius: RADIUS.full,
+    marginBottom: SPACING.xl,
+  },
+  incomingText: {
+    fontSize: FONTS.base,
+    color: COLORS.success,
+    marginLeft: SPACING.sm,
+    fontWeight: '500',
+  },
+  avatarWrapper: {
+    marginBottom: SPACING.lg,
+  },
   avatarContainer: {
     position: 'relative',
-    marginBottom: SPACING.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ringOuter: {
+    position: 'absolute',
+    width: 200,
+    height: 200,
+    borderRadius: 100,
+    borderWidth: 2,
+    borderColor: COLORS.success,
+  },
+  ringMiddle: {
+    position: 'absolute',
+    width: 175,
+    height: 175,
+    borderRadius: 87.5,
+    borderWidth: 1.5,
+    borderColor: 'rgba(16, 185, 129, 0.6)',
+  },
+  ringInner: {
+    position: 'absolute',
+    width: 155,
+    height: 155,
+    borderRadius: 77.5,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
   },
   connectedBadge: {
     position: 'absolute',
-    bottom: 0,
-    right: 0,
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    bottom: 5,
+    right: 5,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: COLORS.success,
     justifyContent: 'center',
     alignItems: 'center',
@@ -443,100 +551,180 @@ const styles = StyleSheet.create({
     fontSize: FONTS.lg,
     color: COLORS.textSecondary,
   },
-  timerContainer: {
+  timerSection: {
     alignItems: 'center',
     marginTop: SPACING.xl,
+  },
+  timerText: {
+    fontSize: 48,
+    fontWeight: '300',
+    color: COLORS.text,
+    fontVariant: ['tabular-nums'],
+  },
+  rateIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: SPACING.xs,
   },
   rateText: {
     fontSize: FONTS.sm,
     color: COLORS.success,
-    marginTop: SPACING.xs,
+    marginLeft: 4,
   },
-  ringingControls: {
+  audioQuality: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
-    paddingHorizontal: SPACING.xxl,
-    paddingBottom: SPACING.xxl,
-  },
-  controlCircle: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    justifyContent: 'center',
     alignItems: 'center',
+    marginTop: SPACING.md,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    paddingVertical: SPACING.xs,
+    paddingHorizontal: SPACING.md,
+    borderRadius: RADIUS.full,
   },
-  controlLabel: {
+  qualityDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: COLORS.success,
+    marginRight: SPACING.xs,
+  },
+  qualityText: {
     fontSize: FONTS.sm,
     color: COLORS.textSecondary,
+  },
+  ringingControls: {
+    paddingHorizontal: SPACING.lg,
+    paddingBottom: SPACING.xxl,
+    alignItems: 'center',
+  },
+  swipeHint: {
+    fontSize: FONTS.sm,
+    color: COLORS.textMuted,
+    marginBottom: SPACING.lg,
+  },
+  buttonsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    width: '100%',
+    paddingHorizontal: SPACING.xl,
+  },
+  actionButton: {
+    width: 70,
+    height: 70,
+    borderRadius: 35,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: {width: 0, height: 4},
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  actionLabel: {
+    fontSize: FONTS.sm,
+    color: COLORS.danger,
     textAlign: 'center',
-    marginTop: SPACING.xs,
+    marginTop: SPACING.sm,
+    fontWeight: '500',
   },
   connectedControls: {
     paddingHorizontal: SPACING.lg,
     paddingBottom: SPACING.xxl,
     alignItems: 'center',
   },
-  controlsRow: {
+  earningsDisplay: {
     flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.lg,
+    borderRadius: RADIUS.full,
     marginBottom: SPACING.lg,
   },
+  earningsText: {
+    fontSize: FONTS.base,
+    color: COLORS.accent,
+    fontWeight: '600',
+    marginLeft: SPACING.xs,
+  },
+  controlsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginBottom: SPACING.xl,
+  },
   controlButton: {
+    alignItems: 'center',
+    marginHorizontal: SPACING.lg,
+  },
+  controlIconBg: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: SPACING.xs,
+  },
+  controlIconBgActive: {
+    backgroundColor: COLORS.primary,
+  },
+  controlLabel: {
+    fontSize: FONTS.xs,
+    color: COLORS.textSecondary,
+  },
+  controlLabelActive: {
+    color: COLORS.primary,
+  },
+  endCallWrapper: {
+    alignItems: 'center',
+  },
+  endCallButton: {
     width: 70,
     height: 70,
     borderRadius: 35,
-    backgroundColor: COLORS.surface,
     justifyContent: 'center',
     alignItems: 'center',
-    marginHorizontal: SPACING.md,
-  },
-  controlButtonActive: {
-    backgroundColor: COLORS.primary,
-  },
-  smallLabel: {
-    fontSize: FONTS.xs,
-    color: COLORS.textSecondary,
-    marginTop: 4,
-  },
-  smallLabelActive: {
-    color: COLORS.white,
-  },
-  endCallButton: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    justifyContent: 'center',
-    alignItems: 'center',
+    shadowColor: '#ff416c',
+    shadowOffset: {width: 0, height: 4},
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 8,
   },
   endCallLabel: {
     fontSize: FONTS.sm,
     color: COLORS.danger,
-    textAlign: 'center',
-    marginTop: SPACING.xs,
+    marginTop: SPACING.sm,
+    fontWeight: '500',
   },
   endedSummary: {
     alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    paddingVertical: SPACING.xl,
+    paddingHorizontal: SPACING.xxl,
+    borderRadius: RADIUS.xl,
   },
-  endedTitle: {
+  summaryIconContainer: {
+    marginBottom: SPACING.md,
+  },
+  summaryTitle: {
     fontSize: FONTS.xxl,
-    fontWeight: '700',
+    fontWeight: '600',
     color: COLORS.text,
-    marginTop: SPACING.md,
   },
-  endedDuration: {
-    fontSize: FONTS.lg,
+  summaryDuration: {
+    fontSize: FONTS.base,
     color: COLORS.textSecondary,
     marginTop: SPACING.xs,
   },
-  earningsRow: {
+  summaryEarnings: {
     flexDirection: 'row',
     alignItems: 'center',
     marginTop: SPACING.md,
-    backgroundColor: COLORS.surface,
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
     paddingVertical: SPACING.sm,
-    paddingHorizontal: SPACING.md,
-    borderRadius: RADIUS.lg,
+    paddingHorizontal: SPACING.lg,
+    borderRadius: RADIUS.full,
   },
-  earnedText: {
+  summaryEarningsText: {
     fontSize: FONTS.base,
     color: COLORS.accent,
     fontWeight: '600',

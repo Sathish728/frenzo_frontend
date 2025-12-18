@@ -8,3 +8,20 @@
 #   http://developer.android.com/guide/developing/tools/proguard.html
 
 # Add any project specific keep options here:
+
+# WebRTC
+-keep class org.webrtc.** { *; }
+-keep class com.oney.WebRTCModule.** { *; }
+
+# InCallManager
+-keep class com.zxcpoiu.incallmanager.** { *; }
+
+# Socket.io
+-keep class io.socket.** { *; }
+-dontwarn io.socket.**
+
+# OkHttp (used by socket.io)
+-dontwarn okhttp3.**
+-dontwarn okio.**
+-keep class okhttp3.** { *; }
+-keep class okio.** { *; }

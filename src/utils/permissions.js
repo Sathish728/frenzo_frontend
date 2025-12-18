@@ -1,6 +1,19 @@
 import {Platform, PermissionsAndroid, Alert, Linking} from 'react-native';
 
 /**
+ * FrndZone Permissions Handler
+ * 
+ * Required permissions:
+ * - MICROPHONE: For voice calls (required)
+ * - CAMERA: For future video calls (optional)
+ * - SMS: For OTP auto-read (optional)
+ * - NOTIFICATIONS: For incoming call alerts (required for Android 13+)
+ * 
+ * NOTE: We do NOT record calls - RECORD_AUDIO permission is for 
+ * real-time microphone access during calls only, not for recording.
+ */
+
+/**
  * Request all necessary permissions for the app
  */
 export const requestAllPermissions = async () => {
@@ -9,24 +22,30 @@ export const requestAllPermissions = async () => {
   }
 
   try {
-    const permissions = [
-      PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-      PermissionsAndroid.PERMISSIONS.CAMERA,
-      PermissionsAndroid.PERMISSIONS.READ_PHONE_STATE,
-    ];
+    const permissions = [];
 
-    // Add SMS permissions (optional - for OTP auto-read)
+    // Microphone - Required for voice calls
+    // Note: Android uses RECORD_AUDIO for microphone access, but we don't record anything
+    permissions.push(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
+
+    // Camera - For future video calls
+    permissions.push(PermissionsAndroid.PERMISSIONS.CAMERA);
+
+    // Phone state - To handle call interruptions
+    permissions.push(PermissionsAndroid.PERMISSIONS.READ_PHONE_STATE);
+
+    // SMS permissions for OTP auto-read (Android 6+)
     if (Platform.Version >= 23) {
       permissions.push(PermissionsAndroid.PERMISSIONS.RECEIVE_SMS);
       permissions.push(PermissionsAndroid.PERMISSIONS.READ_SMS);
     }
 
-    // Add notification permission for Android 13+
+    // Notification permission for Android 13+
     if (Platform.Version >= 33) {
       permissions.push(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
     }
 
-    // Add Bluetooth permission for Android 12+
+    // Bluetooth for audio routing on Android 12+
     if (Platform.Version >= 31) {
       permissions.push(PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT);
     }
@@ -35,13 +54,13 @@ export const requestAllPermissions = async () => {
     
     console.log('Permission results:', results);
 
-    // Check critical permissions
-    const audioGranted = results[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO] === 'granted';
+    // Check critical permission - microphone for calls
+    const microphoneGranted = results[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO] === 'granted';
     
-    if (!audioGranted) {
+    if (!microphoneGranted) {
       Alert.alert(
-        'Microphone Permission Required',
-        'FrndZone needs microphone access to make voice calls. Please enable it in Settings.',
+        'Microphone Access Required',
+        'FrndZone needs microphone access to make voice calls. Your calls are NOT recorded - this permission is only for live audio during calls.',
         [
           {text: 'Cancel', style: 'cancel'},
           {text: 'Open Settings', onPress: openAppSettings},
@@ -58,7 +77,8 @@ export const requestAllPermissions = async () => {
 };
 
 /**
- * Request microphone permission specifically
+ * Request microphone permission for voice calls
+ * Note: Android names this RECORD_AUDIO but we only use it for live call audio
  */
 export const requestMicrophonePermission = async () => {
   if (Platform.OS !== 'android') {
@@ -70,10 +90,10 @@ export const requestMicrophonePermission = async () => {
       PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
       {
         title: 'Microphone Permission',
-        message: 'FrndZone needs access to your microphone to make voice calls.',
+        message: 'FrndZone needs microphone access for voice calls. Your calls are never recorded.',
         buttonNeutral: 'Ask Me Later',
         buttonNegative: 'Cancel',
-        buttonPositive: 'OK',
+        buttonPositive: 'Allow',
       }
     );
 
@@ -83,7 +103,7 @@ export const requestMicrophonePermission = async () => {
     } else if (granted === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN) {
       Alert.alert(
         'Permission Required',
-        'Microphone permission is required for calls. Please enable it in app settings.',
+        'Microphone access is required for voice calls. Please enable it in app settings.',
         [
           {text: 'Cancel', style: 'cancel'},
           {text: 'Open Settings', onPress: openAppSettings},
@@ -101,7 +121,7 @@ export const requestMicrophonePermission = async () => {
 };
 
 /**
- * Request camera permission
+ * Request camera permission for future video calls
  */
 export const requestCameraPermission = async () => {
   if (Platform.OS !== 'android') {
@@ -113,10 +133,10 @@ export const requestCameraPermission = async () => {
       PermissionsAndroid.PERMISSIONS.CAMERA,
       {
         title: 'Camera Permission',
-        message: 'FrndZone needs access to your camera for video calls.',
+        message: 'FrndZone needs camera access for video calls.',
         buttonNeutral: 'Ask Me Later',
         buttonNegative: 'Cancel',
-        buttonPositive: 'OK',
+        buttonPositive: 'Allow',
       }
     );
 
@@ -171,10 +191,22 @@ export const checkMicrophonePermission = async () => {
 };
 
 /**
- * Open app settings
+ * Check if camera permission is granted
  */
-export const openAppSettings = () => {
-  Linking.openSettings();
+export const checkCameraPermission = async () => {
+  if (Platform.OS !== 'android') {
+    return true;
+  }
+
+  try {
+    const granted = await PermissionsAndroid.check(
+      PermissionsAndroid.PERMISSIONS.CAMERA
+    );
+    return granted;
+  } catch (error) {
+    console.error('Check camera permission error:', error);
+    return false;
+  }
 };
 
 /**
@@ -193,7 +225,7 @@ export const requestNotificationPermission = async () => {
         message: 'FrndZone needs to send you notifications for incoming calls.',
         buttonNeutral: 'Ask Me Later',
         buttonNegative: 'Cancel',
-        buttonPositive: 'OK',
+        buttonPositive: 'Allow',
       }
     );
 
@@ -204,12 +236,56 @@ export const requestNotificationPermission = async () => {
   }
 };
 
+/**
+ * Request call-related permissions (microphone + camera)
+ */
+export const requestCallPermissions = async () => {
+  if (Platform.OS !== 'android') {
+    return {microphone: true, camera: true};
+  }
+
+  try {
+    const results = await PermissionsAndroid.requestMultiple([
+      PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+      PermissionsAndroid.PERMISSIONS.CAMERA,
+    ]);
+
+    const microphone = results[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO] === 'granted';
+    const camera = results[PermissionsAndroid.PERMISSIONS.CAMERA] === 'granted';
+
+    if (!microphone) {
+      Alert.alert(
+        'Microphone Required',
+        'Voice calls require microphone access. Please grant permission to make calls.',
+        [
+          {text: 'Cancel', style: 'cancel'},
+          {text: 'Open Settings', onPress: openAppSettings},
+        ]
+      );
+    }
+
+    return {microphone, camera};
+  } catch (error) {
+    console.error('Call permissions error:', error);
+    return {microphone: false, camera: false};
+  }
+};
+
+/**
+ * Open app settings
+ */
+export const openAppSettings = () => {
+  Linking.openSettings();
+};
+
 export default {
   requestAllPermissions,
   requestMicrophonePermission,
   requestCameraPermission,
   requestSMSPermission,
   checkMicrophonePermission,
+  checkCameraPermission,
   requestNotificationPermission,
+  requestCallPermissions,
   openAppSettings,
 };
