@@ -1,11 +1,5 @@
 /**
- * CallScreen for Men - FULLY FIXED VERSION
- * 
- * FIXES:
- * 1. WebRTC initialization happens when call_answered is received
- * 2. Proper timing - waits for server signal to create offer
- * 3. Audio connection tracking
- * 4. Proper cleanup
+ * CallScreen for Men (Caller) - PRODUCTION FIXED VERSION
  */
 
 import React, { useEffect, useState, useRef, useCallback } from 'react';
@@ -27,21 +21,17 @@ import { useDispatch, useSelector } from 'react-redux';
 import { COLORS, FONTS, SPACING, RADIUS, CALL_RATES } from '../../config/constants';
 import {
   callConnected,
-  callAnswered,
   incrementDuration,
   toggleMute,
   toggleSpeaker,
   endCall,
   resetCall,
-  callFailed,
 } from '../../redux/slices/callSlice';
-import { updateCoins } from '../../redux/slices/authSlice';
 import socketService from '../../services/socketService';
 import webRTCService from '../../services/webrtcService';
 import { requestCallPermissions } from '../../utils/permissions';
 import Avatar from '../../components/common/Avatar';
 import CoinDisplay from '../../components/CoinDisplay';
-import { formatNumber } from '../../utils/helpers';
 
 const CallScreen = ({ navigation, route }) => {
   const dispatch = useDispatch();
@@ -60,16 +50,15 @@ const CallScreen = ({ navigation, route }) => {
 
   const timerRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
-  const ringAnim = useRef(new Animated.Value(0)).current;
   
-  const [localCoinsUsed, setLocalCoinsUsed] = useState(0);
-  const [callTimeout, setCallTimeout] = useState(null);
   const [audioConnected, setAudioConnected] = useState(false);
-  const [webrtcState, setWebrtcState] = useState('idle'); // idle, initializing, connecting, connected
+  const [webrtcState, setWebrtcState] = useState('idle');
+  const [coinsUsed, setCoinsUsed] = useState(0);
 
-  // Request permissions on mount
+  // Initialize on mount
   useEffect(() => {
     const init = async () => {
+      // Request permissions
       const permissions = await requestCallPermissions();
       if (!permissions.microphone) {
         Alert.alert(
@@ -80,10 +69,10 @@ const CallScreen = ({ navigation, route }) => {
         return;
       }
 
-      // Setup WebRTC service with socket
+      // Setup WebRTC service
       webRTCService.setSocketService(socketService);
       
-      // Set callbacks
+      // Set WebRTC callbacks
       webRTCService.setCallbacks({
         onRemoteStream: (stream) => {
           console.log('📞 CallScreen: Got remote stream');
@@ -102,19 +91,33 @@ const CallScreen = ({ navigation, route }) => {
           console.log('📞 CallScreen: Call ended:', reason);
           handleEndCall(reason);
         },
-        onAudioConnected: () => {
-          setAudioConnected(true);
-        },
+      });
+
+      // Setup socket callbacks for this call
+      // When call is answered and server says to create offer
+      socketService.setCallback('onCallAnswered', async (data) => {
+        console.log('📞 CallScreen: Call answered, waiting for create_offer signal');
+      });
+
+      socketService.setCallback('onCreateOffer', async (data) => {
+        console.log('📞 CallScreen: Received create_offer signal, initializing WebRTC');
+        const remoteUserId = data.remoteUserId || woman?._id;
+        await webRTCService.initializeAsCaller(remoteUserId, data.callId || callId);
+      });
+
+      socketService.setCallback('onCallEnded', (data) => {
+        handleEndCall(data.reason || 'remote_ended');
       });
     };
 
     init();
 
     return () => {
-      // Cleanup on unmount
       webRTCService.cleanup();
       if (timerRef.current) clearInterval(timerRef.current);
-      if (callTimeout) clearTimeout(callTimeout);
+      socketService.setCallback('onCallAnswered', null);
+      socketService.setCallback('onCreateOffer', null);
+      socketService.setCallback('onCallEnded', null);
     };
   }, []);
 
@@ -142,10 +145,10 @@ const CallScreen = ({ navigation, route }) => {
     return () => backHandler.remove();
   }, [status]);
 
-  // Animations for calling state
+  // Pulse animation
   useEffect(() => {
     if (status === 'calling' || status === 'connecting') {
-      Animated.loop(
+      const anim = Animated.loop(
         Animated.sequence([
           Animated.timing(pulseAnim, {
             toValue: 1.15,
@@ -158,37 +161,21 @@ const CallScreen = ({ navigation, route }) => {
             useNativeDriver: true,
           }),
         ]),
-      ).start();
-
-      Animated.loop(
-        Animated.sequence([
-          Animated.timing(ringAnim, {
-            toValue: 1,
-            duration: 800,
-            useNativeDriver: true,
-          }),
-          Animated.timing(ringAnim, {
-            toValue: 0,
-            duration: 800,
-            useNativeDriver: true,
-          }),
-        ]),
-      ).start();
+      );
+      anim.start();
+      return () => anim.stop();
     } else {
       pulseAnim.setValue(1);
-      ringAnim.setValue(0);
     }
   }, [status]);
 
-  // Call timeout (30 seconds for unanswered calls)
+  // Call timeout
   useEffect(() => {
     if (status === 'calling') {
       const timeout = setTimeout(() => {
         console.log('📞 CallScreen: Call timeout');
-        dispatch(callFailed({ reason: 'no_answer', error: 'No answer' }));
+        handleEndCall('no_answer');
       }, 30000);
-      
-      setCallTimeout(timeout);
       return () => clearTimeout(timeout);
     }
   }, [status]);
@@ -197,7 +184,6 @@ const CallScreen = ({ navigation, route }) => {
   useEffect(() => {
     if (status === 'connected' && audioConnected) {
       console.log('📞 CallScreen: Starting call timer');
-      
       timerRef.current = setInterval(() => {
         dispatch(incrementDuration());
       }, 1000);
@@ -209,63 +195,46 @@ const CallScreen = ({ navigation, route }) => {
         timerRef.current = null;
       }
     };
-  }, [status, audioConnected, dispatch]);
+  }, [status, audioConnected]);
 
   // Handle call status changes
   useEffect(() => {
     if (status === 'ended') {
-      // Cleanup
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-      if (callTimeout) {
-        clearTimeout(callTimeout);
-      }
+      if (timerRef.current) clearInterval(timerRef.current);
       webRTCService.cleanup();
 
-      let message = 'Call ended';
-      let title = 'Call Ended';
-      let shouldAlert = false;
-
-      switch (endReason) {
-        case 'insufficient_coins':
-          title = 'Low Balance';
-          message = 'Your coin balance is too low to continue.';
-          shouldAlert = true;
-          break;
-        case 'busy':
-          title = 'User Busy';
-          message = 'This user is on another call.';
-          shouldAlert = true;
-          break;
-        case 'rejected':
-          title = 'Call Declined';
-          message = 'The user declined your call.';
-          shouldAlert = true;
-          break;
-        case 'no_answer':
-          title = 'No Answer';
-          message = 'The user did not answer.';
-          shouldAlert = true;
-          break;
-        case 'failed':
-        case 'connection_failed':
-          title = 'Call Failed';
-          message = error || 'Unable to connect.';
-          shouldAlert = true;
-          break;
-      }
-
+      const shouldAlert = ['insufficient_coins', 'busy', 'rejected', 'no_answer', 'failed', 'connection_failed'].includes(endReason);
+      
       if (shouldAlert) {
+        let title = 'Call Ended';
+        let message = 'The call has ended.';
+        
+        switch (endReason) {
+          case 'insufficient_coins':
+            title = 'Low Balance';
+            message = 'Your coin balance is too low.';
+            break;
+          case 'busy':
+            title = 'User Busy';
+            message = 'This user is on another call.';
+            break;
+          case 'rejected':
+            title = 'Call Declined';
+            message = 'The user declined your call.';
+            break;
+          case 'no_answer':
+            title = 'No Answer';
+            message = 'The user did not answer.';
+            break;
+          case 'failed':
+          case 'connection_failed':
+            title = 'Call Failed';
+            message = error || 'Unable to connect.';
+            break;
+        }
+
         Alert.alert(title, message, [
-          {
-            text: 'OK',
-            onPress: () => {
-              dispatch(resetCall());
-              navigation.goBack();
-            },
-          },
+          { text: 'OK', onPress: () => { dispatch(resetCall()); navigation.goBack(); } },
         ]);
       } else {
         setTimeout(() => {
@@ -274,37 +243,29 @@ const CallScreen = ({ navigation, route }) => {
         }, 2000);
       }
     }
-  }, [status, endReason, error, dispatch, navigation]);
+  }, [status, endReason]);
 
   const handleEndCall = useCallback((reason = 'user_ended') => {
     console.log('📞 CallScreen: Ending call:', reason);
     
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-    if (callTimeout) {
-      clearTimeout(callTimeout);
-    }
-
+    if (timerRef.current) clearInterval(timerRef.current);
     webRTCService.cleanup();
     socketService.endCall(callId);
-    
-    dispatch(endCall({ reason, duration, coinsUsed: localCoinsUsed }));
-  }, [callId, callTimeout, duration, localCoinsUsed, dispatch]);
+    dispatch(endCall({ reason, duration, coinsUsed }));
+  }, [callId, duration, coinsUsed]);
 
   const handleToggleMute = useCallback(() => {
     webRTCService.toggleMute();
     dispatch(toggleMute());
-  }, [dispatch]);
+  }, []);
 
   const handleToggleSpeaker = useCallback(() => {
     webRTCService.toggleSpeaker();
     dispatch(toggleSpeaker());
-  }, [dispatch]);
+  }, []);
 
   const callUser = woman || remoteUser;
-  const remainingCoins = Math.max(0, (user?.coins || 0));
+  const remainingCoins = user?.coins || 0;
 
   const formatDuration = (seconds) => {
     const mins = Math.floor(seconds / 60);
@@ -314,29 +275,13 @@ const CallScreen = ({ navigation, route }) => {
 
   const getStatusText = () => {
     switch (status) {
-      case 'calling':
-        return 'Ringing...';
-      case 'connecting':
-        return webrtcState === 'checking' ? 'Connecting...' : 'Setting up audio...';
-      case 'connected':
-        return audioConnected ? 'Connected' : 'Connecting audio...';
-      case 'ended':
-        switch (endReason) {
-          case 'busy': return 'User Busy';
-          case 'rejected': return 'Call Declined';
-          case 'no_answer': return 'No Answer';
-          case 'failed': return 'Call Failed';
-          default: return 'Call Ended';
-        }
-      default:
-        return '';
+      case 'calling': return 'Ringing...';
+      case 'connecting': return 'Connecting...';
+      case 'connected': return audioConnected ? 'Connected' : 'Connecting audio...';
+      case 'ended': return 'Call Ended';
+      default: return '';
     }
   };
-
-  const ringIconOpacity = ringAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.5, 1],
-  });
 
   return (
     <LinearGradient
@@ -356,19 +301,11 @@ const CallScreen = ({ navigation, route }) => {
         <View style={styles.content}>
           <Animated.View style={[styles.avatarWrapper, { transform: [{ scale: pulseAnim }] }]}>
             <View style={styles.avatarContainer}>
-              {(status === 'calling' || status === 'connecting') && (
-                <>
-                  <Animated.View style={[styles.ringOuter, { opacity: ringIconOpacity }]} />
-                  <Animated.View style={[styles.ringInner, { opacity: ringIconOpacity }]} />
-                </>
-              )}
-              
               <Avatar
                 name={callUser?.name}
                 imageUrl={callUser?.profileImage}
                 size={130}
               />
-              
               {status === 'connected' && audioConnected && (
                 <View style={styles.connectedBadge}>
                   <Icon name="phone-in-talk" size={18} color={COLORS.white} />
@@ -378,22 +315,11 @@ const CallScreen = ({ navigation, route }) => {
           </Animated.View>
 
           <Text style={styles.userName}>{callUser?.name || 'Unknown'}</Text>
-          
-          <View style={styles.statusContainer}>
-            <Text style={styles.statusText}>{getStatusText()}</Text>
-          </View>
+          <Text style={styles.statusText}>{getStatusText()}</Text>
 
           {status === 'connected' && audioConnected && (
             <View style={styles.timerSection}>
               <Text style={styles.timerText}>{formatDuration(duration)}</Text>
-              {localCoinsUsed > 0 && (
-                <View style={styles.coinsInfo}>
-                  <Icon name="circle-multiple" size={14} color={COLORS.accent} />
-                  <Text style={styles.coinsUsedText}>
-                    {localCoinsUsed} coins used
-                  </Text>
-                </View>
-              )}
             </View>
           )}
 
@@ -409,10 +335,7 @@ const CallScreen = ({ navigation, route }) => {
         <View style={styles.controlsContainer}>
           {status === 'connected' && audioConnected && (
             <View style={styles.controlsRow}>
-              <TouchableOpacity
-                onPress={handleToggleMute}
-                style={styles.controlButton}
-                activeOpacity={0.7}>
+              <TouchableOpacity onPress={handleToggleMute} style={styles.controlButton}>
                 <View style={[styles.controlIconBg, isMuted && styles.controlIconBgActive]}>
                   <Icon
                     name={isMuted ? 'microphone-off' : 'microphone'}
@@ -420,15 +343,10 @@ const CallScreen = ({ navigation, route }) => {
                     color={isMuted ? COLORS.white : COLORS.text}
                   />
                 </View>
-                <Text style={[styles.controlLabel, isMuted && styles.controlLabelActive]}>
-                  {isMuted ? 'Unmute' : 'Mute'}
-                </Text>
+                <Text style={styles.controlLabel}>{isMuted ? 'Unmute' : 'Mute'}</Text>
               </TouchableOpacity>
 
-              <TouchableOpacity
-                onPress={handleToggleSpeaker}
-                style={styles.controlButton}
-                activeOpacity={0.7}>
+              <TouchableOpacity onPress={handleToggleSpeaker} style={styles.controlButton}>
                 <View style={[styles.controlIconBg, isSpeakerOn && styles.controlIconBgActive]}>
                   <Icon
                     name={isSpeakerOn ? 'volume-high' : 'volume-medium'}
@@ -436,9 +354,7 @@ const CallScreen = ({ navigation, route }) => {
                     color={isSpeakerOn ? COLORS.white : COLORS.text}
                   />
                 </View>
-                <Text style={[styles.controlLabel, isSpeakerOn && styles.controlLabelActive]}>
-                  Speaker
-                </Text>
+                <Text style={styles.controlLabel}>Speaker</Text>
               </TouchableOpacity>
             </View>
           )}
@@ -446,11 +362,8 @@ const CallScreen = ({ navigation, route }) => {
           {status !== 'ended' && (
             <TouchableOpacity 
               onPress={() => handleEndCall(status === 'calling' ? 'cancelled' : 'user_ended')} 
-              activeOpacity={0.8}
               style={styles.endCallWrapper}>
-              <LinearGradient
-                colors={['#ff416c', '#ff4b2b']}
-                style={styles.endCallButton}>
+              <LinearGradient colors={['#ff416c', '#ff4b2b']} style={styles.endCallButton}>
                 <Icon name="phone-hangup" size={32} color={COLORS.white} />
               </LinearGradient>
               <Text style={styles.endCallLabel}>
@@ -464,9 +377,6 @@ const CallScreen = ({ navigation, route }) => {
               <Icon name="check-circle" size={40} color={COLORS.success} />
               <Text style={styles.summaryTitle}>Call Ended</Text>
               <Text style={styles.summaryDuration}>Duration: {formatDuration(duration)}</Text>
-              {localCoinsUsed > 0 && (
-                <Text style={styles.summaryCoins}>Coins Used: {localCoinsUsed}</Text>
-              )}
             </View>
           )}
         </View>
@@ -493,11 +403,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.sm,
     borderRadius: RADIUS.full,
   },
-  rateText: {
-    fontSize: FONTS.sm,
-    color: COLORS.textSecondary,
-    marginLeft: 4,
-  },
+  rateText: { fontSize: FONTS.sm, color: COLORS.textSecondary, marginLeft: 4 },
   content: {
     flex: 1,
     alignItems: 'center',
@@ -505,27 +411,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.lg,
   },
   avatarWrapper: { marginBottom: SPACING.lg },
-  avatarContainer: {
-    position: 'relative',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  ringOuter: {
-    position: 'absolute',
-    width: 180,
-    height: 180,
-    borderRadius: 90,
-    borderWidth: 2,
-    borderColor: COLORS.primary,
-  },
-  ringInner: {
-    position: 'absolute',
-    width: 160,
-    height: 160,
-    borderRadius: 80,
-    borderWidth: 1,
-    borderColor: COLORS.primaryLight,
-  },
+  avatarContainer: { position: 'relative', alignItems: 'center', justifyContent: 'center' },
   connectedBadge: {
     position: 'absolute',
     bottom: 5,
@@ -546,7 +432,6 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.xs,
     textAlign: 'center',
   },
-  statusContainer: { flexDirection: 'row', alignItems: 'center' },
   statusText: { fontSize: FONTS.base, color: COLORS.textSecondary },
   timerSection: { alignItems: 'center', marginTop: SPACING.xl },
   timerText: {
@@ -555,8 +440,6 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     fontVariant: ['tabular-nums'],
   },
-  coinsInfo: { flexDirection: 'row', alignItems: 'center', marginTop: SPACING.xs },
-  coinsUsedText: { fontSize: FONTS.sm, color: COLORS.accent, marginLeft: 4 },
   qualityContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -590,7 +473,6 @@ const styles = StyleSheet.create({
   },
   controlIconBgActive: { backgroundColor: COLORS.primary },
   controlLabel: { fontSize: FONTS.xs, color: COLORS.textSecondary },
-  controlLabelActive: { color: COLORS.primary },
   endCallWrapper: { alignItems: 'center' },
   endCallButton: {
     width: 70,
@@ -620,7 +502,6 @@ const styles = StyleSheet.create({
     marginTop: SPACING.sm,
   },
   summaryDuration: { fontSize: FONTS.base, color: COLORS.textSecondary, marginTop: SPACING.xs },
-  summaryCoins: { fontSize: FONTS.sm, color: COLORS.accent, marginTop: SPACING.xs },
 });
 
 export default CallScreen;

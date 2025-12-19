@@ -1,11 +1,5 @@
 /**
- * IncomingCallScreen for Women - FULLY FIXED VERSION
- * 
- * FIXES:
- * 1. WebRTC preparation happens when 'prepare_webrtc' is received
- * 2. Signals 'webrtc_ready' when setup complete
- * 3. Waits for offer from caller
- * 4. Proper audio connection tracking
+ * IncomingCallScreen for Women (Receiver) - PRODUCTION FIXED VERSION
  */
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
@@ -50,19 +44,15 @@ const IncomingCallScreen = ({ navigation }) => {
 
   const timerRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
-  const slideAnim = useRef(new Animated.Value(0)).current;
-  const ringAnim = useRef(new Animated.Value(0)).current;
-  const vibrationIntervalRef = useRef(null);
   
   const [coinsEarned, setCoinsEarned] = useState(0);
   const [audioConnected, setAudioConnected] = useState(false);
-  const [webrtcState, setWebrtcState] = useState('idle');
   const [connectionStatus, setConnectionStatus] = useState('ringing');
 
-  // Setup WebRTC and request permissions on mount
+  // Setup on mount
   useEffect(() => {
     const init = async () => {
-      // Request permissions first
+      // Request permissions
       const permissions = await requestCallPermissions();
       if (!permissions.microphone) {
         Alert.alert(
@@ -76,14 +66,13 @@ const IncomingCallScreen = ({ navigation }) => {
       // Setup WebRTC with socket
       webRTCService.setSocketService(socketService);
       
-      // Set callbacks
+      // Set WebRTC callbacks
       webRTCService.setCallbacks({
         onRemoteStream: (stream) => {
           console.log('📞 IncomingCall: Got remote audio stream');
         },
         onConnectionStateChange: (state) => {
           console.log('📞 IncomingCall: ICE state:', state);
-          setWebrtcState(state);
         },
         onCallConnected: () => {
           console.log('📞 IncomingCall: Audio CONNECTED!');
@@ -91,104 +80,53 @@ const IncomingCallScreen = ({ navigation }) => {
           setConnectionStatus('connected');
           Vibration.vibrate(100);
           dispatch(callConnected());
-          // Signal to server that audio is connected
-          socketService.signalCallConnected(callId);
         },
         onCallEnded: (reason) => {
           console.log('📞 IncomingCall: Call ended:', reason);
           handleEndCall(reason);
         },
-        onAudioConnected: () => {
-          setAudioConnected(true);
-        },
       });
 
-      // Socket event handlers
-      setupSocketListeners();
+      // Setup socket callbacks
+      socketService.setCallback('onPrepareWebRTC', async (data) => {
+        console.log('📞 IncomingCall: Received prepare_webrtc');
+        setConnectionStatus('preparing');
+        
+        try {
+          await webRTCService.prepareAsReceiver(data.callId, data.remoteUserId);
+          setConnectionStatus('waiting_for_offer');
+        } catch (error) {
+          console.error('📞 IncomingCall: Failed to prepare WebRTC:', error);
+          handleEndCall('webrtc_error');
+        }
+      });
+
+      socketService.setCallback('onCallEnded', (data) => {
+        handleEndCall(data.reason || 'call_ended');
+      });
+
+      socketService.setCallback('onCoinUpdate', (data) => {
+        console.log('📞 IncomingCall: Coin update:', data);
+        if (data.earned !== undefined) {
+          setCoinsEarned(prev => prev + data.earned);
+        }
+        if (data.coins !== undefined) {
+          dispatch(updateCoins(data.coins));
+        }
+      });
     };
 
     init();
 
     return () => {
       Vibration.cancel();
-      if (vibrationIntervalRef.current) {
-        clearInterval(vibrationIntervalRef.current);
-      }
       webRTCService.cleanup();
       if (timerRef.current) clearInterval(timerRef.current);
-      removeSocketListeners();
+      socketService.setCallback('onPrepareWebRTC', null);
+      socketService.setCallback('onCallEnded', null);
+      socketService.setCallback('onCoinUpdate', null);
     };
   }, []);
-
-  // Setup socket listeners for WebRTC signaling
-  const setupSocketListeners = () => {
-    // When server tells us to prepare WebRTC (after we answer)
-    socketService.setCallback('onPrepareWebRTC', async (data) => {
-      console.log('📞 IncomingCall: Received prepare_webrtc signal');
-      setConnectionStatus('preparing');
-      
-      try {
-        // Initialize as receiver - get mic, create peer, add tracks
-        await webRTCService.prepareAsReceiver(data.callId);
-        console.log('📞 IncomingCall: WebRTC prepared, signaling ready');
-        
-        // Signal to server that we're ready to receive offer
-        socketService.signalWebRTCReady(data.callId);
-        setConnectionStatus('waiting_for_offer');
-      } catch (error) {
-        console.error('📞 IncomingCall: Failed to prepare WebRTC:', error);
-        Alert.alert('Connection Error', 'Failed to setup audio connection');
-        handleEndCall('webrtc_error');
-      }
-    });
-
-    // When we receive WebRTC offer from caller
-    socketService.setCallback('onWebRTCOffer', async (data) => {
-      console.log('📞 IncomingCall: Received WebRTC offer');
-      setConnectionStatus('connecting');
-      
-      try {
-        await webRTCService.handleOffer(data.offer, data.callId, data.from);
-        console.log('📞 IncomingCall: Processed offer, answer sent');
-      } catch (error) {
-        console.error('📞 IncomingCall: Failed to handle offer:', error);
-        handleEndCall('webrtc_error');
-      }
-    });
-
-    // When we receive ICE candidate
-    socketService.setCallback('onIceCandidate', async (data) => {
-      console.log('📞 IncomingCall: Received ICE candidate');
-      try {
-        await webRTCService.addIceCandidate(data.candidate);
-      } catch (error) {
-        console.error('📞 IncomingCall: Failed to add ICE candidate:', error);
-      }
-    });
-
-    // When call ends from server
-    socketService.setCallback('onCallEnded', (data) => {
-      console.log('📞 IncomingCall: Call ended by server:', data.reason);
-      handleEndCall(data.reason || 'call_ended');
-    });
-
-    // Coin update from server
-    socketService.setCallback('onCoinUpdate', (data) => {
-      console.log('📞 IncomingCall: Coin update:', data);
-      if (data.earned !== undefined) {
-        setCoinsEarned(data.earned);
-        dispatch(updateCoins(data.totalCoins));
-      }
-    });
-  };
-
-  const removeSocketListeners = () => {
-    socketService.setCallback('onPrepareWebRTC', null);
-    socketService.setCallback('onWebRTCOffer', null);
-    socketService.setCallback('onIceCandidate', null);
-    socketService.setCallback('onCallEnded', null);
-    socketService.setCallback('onCoinUpdate', null);
-  };
 
   // Handle back button
   useEffect(() => {
@@ -207,15 +145,13 @@ const IncomingCallScreen = ({ navigation }) => {
     return () => backHandler.remove();
   }, [status, audioConnected]);
 
-  // Vibration and animations for ringing
+  // Vibration and animation for ringing
   useEffect(() => {
     if (status === 'ringing') {
-      // Vibration pattern
       const pattern = [0, 400, 200, 400, 200, 400];
       Vibration.vibrate(pattern, true);
 
-      // Pulse animation
-      const pulse = Animated.loop(
+      const anim = Animated.loop(
         Animated.sequence([
           Animated.timing(pulseAnim, {
             toValue: 1.2,
@@ -229,34 +165,16 @@ const IncomingCallScreen = ({ navigation }) => {
           }),
         ])
       );
-      pulse.start();
-
-      // Ring animation
-      const ring = Animated.loop(
-        Animated.sequence([
-          Animated.timing(ringAnim, {
-            toValue: 1,
-            duration: 1000,
-            useNativeDriver: true,
-          }),
-          Animated.timing(ringAnim, {
-            toValue: 0,
-            duration: 1000,
-            useNativeDriver: true,
-          }),
-        ])
-      );
-      ring.start();
+      anim.start();
 
       return () => {
-        pulse.stop();
-        ring.stop();
+        anim.stop();
         Vibration.cancel();
       };
     }
   }, [status]);
 
-  // Timer for call duration - only when audio is connected
+  // Timer for call duration
   useEffect(() => {
     if (audioConnected && !timerRef.current) {
       console.log('📞 IncomingCall: Starting duration timer');
@@ -271,16 +189,14 @@ const IncomingCallScreen = ({ navigation }) => {
         timerRef.current = null;
       }
     };
-  }, [audioConnected, dispatch]);
+  }, [audioConnected]);
 
-  // Format duration to MM:SS
   const formatDuration = (seconds) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Handle answer call
   const handleAnswer = async () => {
     console.log('📞 IncomingCall: Answering call', callId);
     Vibration.cancel();
@@ -292,7 +208,6 @@ const IncomingCallScreen = ({ navigation }) => {
     socketService.answerCall(callId);
   };
 
-  // Handle decline call
   const handleDecline = () => {
     console.log('📞 IncomingCall: Declining call', callId);
     Vibration.cancel();
@@ -302,7 +217,6 @@ const IncomingCallScreen = ({ navigation }) => {
     navigation.goBack();
   };
 
-  // Handle end call
   const handleEndCall = useCallback((reason = 'user_ended') => {
     console.log('📞 IncomingCall: Ending call, reason:', reason);
     
@@ -320,7 +234,6 @@ const IncomingCallScreen = ({ navigation }) => {
     
     dispatch(endCall({ reason }));
     
-    // Show summary before navigating
     if (duration > 0 || coinsEarned > 0) {
       Alert.alert(
         'Call Ended',
@@ -334,21 +247,18 @@ const IncomingCallScreen = ({ navigation }) => {
       dispatch(resetCall());
       navigation.goBack();
     }
-  }, [callId, duration, coinsEarned, dispatch, navigation]);
+  }, [callId, duration, coinsEarned]);
 
-  // Toggle mute
   const handleToggleMute = () => {
     webRTCService.toggleMute();
     dispatch(toggleMute());
   };
 
-  // Toggle speaker
   const handleToggleSpeaker = () => {
     webRTCService.toggleSpeaker();
     dispatch(toggleSpeaker());
   };
 
-  // Get connection status text
   const getStatusText = () => {
     if (audioConnected) return 'Connected';
     switch (connectionStatus) {
@@ -356,144 +266,130 @@ const IncomingCallScreen = ({ navigation }) => {
       case 'answering': return 'Answering...';
       case 'preparing': return 'Preparing audio...';
       case 'waiting_for_offer': return 'Connecting...';
-      case 'connecting': return 'Establishing connection...';
       case 'connected': return 'Connected';
       default: return 'Connecting...';
     }
   };
 
-  // Render ringing UI
-  const renderRingingUI = () => (
-    <View style={styles.ringingContainer}>
-      <Animated.View style={[styles.avatarContainer, { transform: [{ scale: pulseAnim }] }]}>
-        <Avatar
-          source={remoteUser?.profileImage}
-          name={remoteUser?.name}
-          size={120}
-        />
-      </Animated.View>
-      
-      <Text style={styles.callerName}>{remoteUser?.name || 'Unknown'}</Text>
-      <Text style={styles.callStatus}>Incoming Voice Call</Text>
-      
-      <Animated.View 
-        style={[
-          styles.rateContainer,
-          { opacity: ringAnim }
-        ]}
-      >
-        <Icon name="currency-inr" size={16} color={COLORS.success} />
-        <Text style={styles.rateText}>
-          Earn {CALL_RATES.WOMAN_EARNINGS}/min
-        </Text>
-      </Animated.View>
+  // Ringing UI
+  if (status === 'ringing') {
+    return (
+      <LinearGradient
+        colors={[COLORS.background, '#1a1a2e', COLORS.surface]}
+        style={styles.container}>
+        <SafeAreaView style={styles.safeArea}>
+          <View style={styles.ringingContainer}>
+            <Animated.View style={[styles.avatarContainer, { transform: [{ scale: pulseAnim }] }]}>
+              <Avatar
+                name={remoteUser?.name}
+                imageUrl={remoteUser?.profileImage}
+                size={120}
+              />
+            </Animated.View>
+            
+            <Text style={styles.callerName}>{remoteUser?.name || 'Unknown'}</Text>
+            <Text style={styles.callStatus}>Incoming Voice Call</Text>
+            
+            <View style={styles.rateContainer}>
+              <Icon name="currency-inr" size={16} color={COLORS.success} />
+              <Text style={styles.rateText}>Earn {CALL_RATES.coinsPerMinute} coins/min</Text>
+            </View>
 
-      <View style={styles.actionButtons}>
-        <TouchableOpacity
-          style={[styles.actionButton, styles.declineButton]}
-          onPress={handleDecline}
-        >
-          <Icon name="phone-hangup" size={36} color={COLORS.white} />
-        </TouchableOpacity>
-        
-        <TouchableOpacity
-          style={[styles.actionButton, styles.answerButton]}
-          onPress={handleAnswer}
-        >
-          <Icon name="phone" size={36} color={COLORS.white} />
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
-
-  // Render connected UI
-  const renderConnectedUI = () => (
-    <View style={styles.connectedContainer}>
-      <View style={styles.avatarContainer}>
-        <Avatar
-          source={remoteUser?.profileImage}
-          name={remoteUser?.name}
-          size={100}
-        />
-        {audioConnected && (
-          <View style={styles.connectedIndicator}>
-            <Icon name="check-circle" size={24} color={COLORS.success} />
+            <View style={styles.actionButtons}>
+              <TouchableOpacity
+                style={[styles.actionButton, styles.declineButton]}
+                onPress={handleDecline}>
+                <Icon name="phone-hangup" size={36} color={COLORS.white} />
+              </TouchableOpacity>
+              
+              <TouchableOpacity
+                style={[styles.actionButton, styles.answerButton]}
+                onPress={handleAnswer}>
+                <Icon name="phone" size={36} color={COLORS.white} />
+              </TouchableOpacity>
+            </View>
           </View>
-        )}
-      </View>
-      
-      <Text style={styles.callerName}>{remoteUser?.name || 'Unknown'}</Text>
-      
-      <View style={styles.statusContainer}>
-        <View style={[
-          styles.statusDot,
-          { backgroundColor: audioConnected ? COLORS.success : COLORS.warning }
-        ]} />
-        <Text style={styles.callStatus}>{getStatusText()}</Text>
-      </View>
-      
-      <Text style={styles.duration}>{formatDuration(duration)}</Text>
-      
-      <View style={styles.earningsContainer}>
-        <Icon name="currency-inr" size={20} color={COLORS.success} />
-        <Text style={styles.earningsText}>{formatNumber(coinsEarned)}</Text>
-        <Text style={styles.earningsLabel}>earned</Text>
-      </View>
+        </SafeAreaView>
+      </LinearGradient>
+    );
+  }
 
-      <View style={styles.controlsContainer}>
-        <TouchableOpacity
-          style={[styles.controlButton, isMuted && styles.controlButtonActive]}
-          onPress={handleToggleMute}
-        >
-          <Icon 
-            name={isMuted ? 'microphone-off' : 'microphone'} 
-            size={28} 
-            color={isMuted ? COLORS.error : COLORS.white} 
-          />
-          <Text style={styles.controlLabel}>{isMuted ? 'Unmute' : 'Mute'}</Text>
-        </TouchableOpacity>
-        
-        <TouchableOpacity
-          style={[styles.controlButton, isSpeakerOn && styles.controlButtonActive]}
-          onPress={handleToggleSpeaker}
-        >
-          <Icon 
-            name={isSpeakerOn ? 'volume-high' : 'volume-medium'} 
-            size={28} 
-            color={isSpeakerOn ? COLORS.primary : COLORS.white} 
-          />
-          <Text style={styles.controlLabel}>Speaker</Text>
-        </TouchableOpacity>
-      </View>
-
-      <TouchableOpacity
-        style={styles.endCallButton}
-        onPress={() => handleEndCall('user_ended')}
-      >
-        <Icon name="phone-hangup" size={32} color={COLORS.white} />
-      </TouchableOpacity>
-    </View>
-  );
-
+  // Connected UI
   return (
     <LinearGradient
-      colors={[COLORS.gradientStart || '#1a1a2e', COLORS.gradientEnd || '#16213e']}
-      style={styles.container}
-    >
+      colors={[COLORS.background, '#1a1a2e', COLORS.surface]}
+      style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
-        {status === 'ringing' ? renderRingingUI() : renderConnectedUI()}
+        <View style={styles.connectedContainer}>
+          <View style={styles.avatarContainer}>
+            <Avatar
+              name={remoteUser?.name}
+              imageUrl={remoteUser?.profileImage}
+              size={100}
+            />
+            {audioConnected && (
+              <View style={styles.connectedIndicator}>
+                <Icon name="check-circle" size={24} color={COLORS.success} />
+              </View>
+            )}
+          </View>
+          
+          <Text style={styles.callerName}>{remoteUser?.name || 'Unknown'}</Text>
+          
+          <View style={styles.statusContainer}>
+            <View style={[
+              styles.statusDot,
+              { backgroundColor: audioConnected ? COLORS.success : COLORS.warning }
+            ]} />
+            <Text style={styles.callStatus}>{getStatusText()}</Text>
+          </View>
+          
+          <Text style={styles.duration}>{formatDuration(duration)}</Text>
+          
+          <View style={styles.earningsContainer}>
+            <Icon name="currency-inr" size={20} color={COLORS.success} />
+            <Text style={styles.earningsText}>{formatNumber(coinsEarned)}</Text>
+            <Text style={styles.earningsLabel}>earned</Text>
+          </View>
+
+          <View style={styles.controlsContainer}>
+            <TouchableOpacity
+              style={[styles.controlButton, isMuted && styles.controlButtonActive]}
+              onPress={handleToggleMute}>
+              <Icon 
+                name={isMuted ? 'microphone-off' : 'microphone'} 
+                size={28} 
+                color={COLORS.white} 
+              />
+              <Text style={styles.controlLabel}>{isMuted ? 'Unmute' : 'Mute'}</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity
+              style={[styles.controlButton, isSpeakerOn && styles.controlButtonActive]}
+              onPress={handleToggleSpeaker}>
+              <Icon 
+                name={isSpeakerOn ? 'volume-high' : 'volume-medium'} 
+                size={28} 
+                color={COLORS.white} 
+              />
+              <Text style={styles.controlLabel}>Speaker</Text>
+            </TouchableOpacity>
+          </View>
+
+          <TouchableOpacity
+            style={styles.endCallButton}
+            onPress={() => handleEndCall('user_ended')}>
+            <Icon name="phone-hangup" size={32} color={COLORS.white} />
+          </TouchableOpacity>
+        </View>
       </SafeAreaView>
     </LinearGradient>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  safeArea: {
-    flex: 1,
-  },
+  container: { flex: 1 },
+  safeArea: { flex: 1 },
   ringingContainer: {
     flex: 1,
     alignItems: 'center',
@@ -520,16 +416,14 @@ const styles = StyleSheet.create({
   },
   callerName: {
     fontSize: 28,
-    fontFamily: FONTS?.bold || 'System',
     fontWeight: 'bold',
-    color: COLORS.white,
+    color: COLORS.text,
     marginBottom: SPACING.xs,
     textAlign: 'center',
   },
   callStatus: {
     fontSize: 16,
-    fontFamily: FONTS?.regular || 'System',
-    color: COLORS.textSecondary || '#aaa',
+    color: COLORS.textSecondary,
     marginBottom: SPACING.md,
   },
   statusContainer: {
@@ -554,15 +448,13 @@ const styles = StyleSheet.create({
   },
   rateText: {
     fontSize: 16,
-    fontFamily: FONTS?.medium || 'System',
     color: COLORS.success,
     marginLeft: SPACING.xs,
   },
   duration: {
     fontSize: 48,
-    fontFamily: FONTS?.bold || 'System',
-    fontWeight: 'bold',
-    color: COLORS.white,
+    fontWeight: '300',
+    color: COLORS.text,
     marginVertical: SPACING.lg,
   },
   earningsContainer: {
@@ -576,14 +468,12 @@ const styles = StyleSheet.create({
   },
   earningsText: {
     fontSize: 24,
-    fontFamily: FONTS?.bold || 'System',
     fontWeight: 'bold',
     color: COLORS.success,
     marginLeft: SPACING.xs,
   },
   earningsLabel: {
     fontSize: 14,
-    fontFamily: FONTS?.regular || 'System',
     color: COLORS.success,
     marginLeft: SPACING.xs,
     opacity: 0.8,
@@ -592,7 +482,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 60,
     marginTop: 'auto',
     marginBottom: SPACING.xxl,
   },
@@ -602,23 +491,19 @@ const styles = StyleSheet.create({
     borderRadius: 36,
     justifyContent: 'center',
     alignItems: 'center',
+    marginHorizontal: 30,
     elevation: 5,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
   },
   answerButton: {
     backgroundColor: COLORS.success,
   },
   declineButton: {
-    backgroundColor: COLORS.error,
+    backgroundColor: COLORS.danger,
   },
   controlsContainer: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 40,
     marginTop: 'auto',
     marginBottom: SPACING.xl,
   },
@@ -629,13 +514,13 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.1)',
     justifyContent: 'center',
     alignItems: 'center',
+    marginHorizontal: 20,
   },
   controlButtonActive: {
     backgroundColor: 'rgba(255, 255, 255, 0.25)',
   },
   controlLabel: {
     fontSize: 12,
-    fontFamily: FONTS?.regular || 'System',
     color: COLORS.white,
     marginTop: SPACING.xs,
     opacity: 0.8,
@@ -644,15 +529,11 @@ const styles = StyleSheet.create({
     width: 72,
     height: 72,
     borderRadius: 36,
-    backgroundColor: COLORS.error,
+    backgroundColor: COLORS.danger,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: SPACING.xxl,
     elevation: 5,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
   },
 });
 

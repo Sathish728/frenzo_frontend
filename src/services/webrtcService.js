@@ -1,12 +1,11 @@
 /**
- * WebRTC Service for FrndZone - FULLY FIXED VERSION
+ * WebRTC Service for FrndZone - PRODUCTION FIXED VERSION
  * 
- * CRITICAL FIXES:
- * 1. Proper initialization timing - receiver must setup BEFORE caller sends offer
- * 2. Separated caller vs receiver initialization
- * 3. Proper ICE candidate queueing
+ * This version properly handles:
+ * 1. Caller flow: wait for call_answered -> wait for create_offer -> create offer -> send
+ * 2. Receiver flow: answer call -> prepare_webrtc -> setup peer -> webrtc_ready -> receive offer -> send answer
+ * 3. Proper ICE candidate queuing
  * 4. Audio track verification
- * 5. Connection state handling
  */
 
 import {
@@ -24,7 +23,7 @@ try {
   console.log('InCallManager not available');
 }
 
-// ICE Servers - CRITICAL for NAT traversal
+// ICE Servers
 const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -32,7 +31,6 @@ const ICE_SERVERS = {
     { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun3.l.google.com:19302' },
     { urls: 'stun:stun4.l.google.com:19302' },
-    // Free TURN servers for better connectivity
     {
       urls: 'turn:openrelay.metered.ca:80',
       username: 'openrelayproject',
@@ -68,73 +66,67 @@ class WebRTCService {
     this.hasRemoteDescription = false;
     
     // Callbacks
-    this.onRemoteStreamCallback = null;
-    this.onConnectionStateChangeCallback = null;
-    this.onCallConnectedCallback = null;
-    this.onCallEndedCallback = null;
-    this.onAudioConnectedCallback = null;
+    this.callbacks = {
+      onRemoteStream: null,
+      onConnectionStateChange: null,
+      onCallConnected: null,
+      onCallEnded: null,
+      onAudioConnected: null,
+    };
   }
 
   /**
-   * Set socket service reference
+   * Set socket service reference and setup listeners
    */
   setSocketService(socketService) {
     this.socketService = socketService;
-    this._setupSocketListeners();
+    this._setupSocketCallbacks();
   }
 
   /**
-   * Setup socket listeners for WebRTC signaling
+   * Set callbacks
    */
-  _setupSocketListeners() {
+  setCallbacks(callbacks) {
+    this.callbacks = { ...this.callbacks, ...callbacks };
+  }
+
+  /**
+   * Setup socket callbacks for WebRTC signaling
+   */
+  _setupSocketCallbacks() {
     if (!this.socketService) return;
 
-    this.socketService.setWebRTCCallbacks({
-      // When we receive an offer (receiver only)
-      onOffer: async (data) => {
-        console.log('📞 WebRTC: Received OFFER from', data.fromUserId);
-        await this._handleRemoteOffer(data.offer, data.fromUserId);
-      },
-      
-      // When we receive an answer (caller only)
-      onAnswer: async (data) => {
-        console.log('📞 WebRTC: Received ANSWER from', data.fromUserId);
-        await this._handleRemoteAnswer(data.answer);
-      },
-      
-      // ICE candidates from remote
-      onICECandidate: async (data) => {
-        await this._addIceCandidate(data.candidate);
-      },
-      
-      // Server tells receiver to prepare WebRTC
-      onPrepareWebRTC: async (data) => {
-        console.log('📞 WebRTC: Preparing as RECEIVER');
-        this.targetUserId = data.remoteUserId;
-        this.callId = data.callId;
-        this.isCaller = false;
-        await this._prepareAsReceiver();
-      },
-      
-      // Server tells caller to create offer (after receiver is ready)
-      onCallAnsweredWithOffer: async (data) => {
-        console.log('📞 WebRTC: Call answered, initializing as CALLER');
-        this.targetUserId = data.remoteUserId;
-        this.callId = data.callId;
-        this.isCaller = true;
-        await this._initializeAsCaller();
-      },
+    // Handle incoming offer (receiver only)
+    this.socketService.setCallback('onWebRTCOffer', async (data) => {
+      console.log('📞 WebRTC: Received OFFER');
+      await this.handleOffer(data.offer, data.fromUserId);
+    });
+
+    // Handle incoming answer (caller only)
+    this.socketService.setCallback('onWebRTCAnswer', async (data) => {
+      console.log('📞 WebRTC: Received ANSWER');
+      await this.handleAnswer(data.answer);
+    });
+
+    // Handle ICE candidates
+    this.socketService.setCallback('onICECandidate', async (data) => {
+      console.log('📞 WebRTC: Received ICE candidate');
+      await this.addIceCandidate(data.candidate);
     });
   }
 
   /**
    * CALLER: Initialize WebRTC and create offer
-   * Called AFTER server confirms receiver is ready
+   * Called when we receive 'create_offer' from server
    */
-  async _initializeAsCaller() {
+  async initializeAsCaller(targetUserId, callId) {
     try {
-      console.log('📞 WebRTC: CALLER initializing...');
+      console.log('📞 WebRTC: Initializing as CALLER');
       
+      this.targetUserId = targetUserId;
+      this.callId = callId;
+      this.isCaller = true;
+
       // Start audio session
       this._startAudioSession();
 
@@ -155,19 +147,24 @@ class WebRTCService {
       return true;
     } catch (error) {
       console.error('📞 WebRTC: CALLER init error:', error);
-      this._notifyError('Failed to initialize call');
+      if (this.callbacks.onCallEnded) {
+        this.callbacks.onCallEnded('webrtc_error');
+      }
       return false;
     }
   }
 
   /**
-   * RECEIVER: Prepare WebRTC (setup peer connection, wait for offer)
-   * Called when server sends 'prepare_webrtc'
+   * RECEIVER: Prepare WebRTC (called when 'prepare_webrtc' received)
    */
-  async _prepareAsReceiver() {
+  async prepareAsReceiver(callId, targetUserId) {
     try {
-      console.log('📞 WebRTC: RECEIVER preparing...');
+      console.log('📞 WebRTC: Preparing as RECEIVER');
       
+      this.callId = callId;
+      this.targetUserId = targetUserId;
+      this.isCaller = false;
+
       // Start audio session
       this._startAudioSession();
 
@@ -181,43 +178,116 @@ class WebRTCService {
       this._addLocalTracks();
 
       this.isInitialized = true;
-      console.log('📞 WebRTC: RECEIVER ready, waiting for offer');
+      console.log('📞 WebRTC: RECEIVER ready, signaling to server');
       
-      // Tell server we're ready
-      if (this.socketService && this.callId) {
-        this.socketService.signalWebRTCReady(this.callId);
+      // Tell server we're ready to receive offer
+      if (this.socketService) {
+        this.socketService.signalWebRTCReady(callId);
       }
       
       return true;
     } catch (error) {
       console.error('📞 WebRTC: RECEIVER prep error:', error);
-      this._notifyError('Failed to prepare for call');
+      if (this.callbacks.onCallEnded) {
+        this.callbacks.onCallEnded('webrtc_error');
+      }
       return false;
     }
   }
 
   /**
-   * PUBLIC: Manual initialization as caller (for compatibility)
+   * Handle incoming offer (RECEIVER only)
    */
-  async initializeAsCaller(targetUserId, callId) {
-    this.targetUserId = targetUserId;
-    this.callId = callId;
-    this.isCaller = true;
-    return await this._initializeAsCaller();
+  async handleOffer(offer, fromUserId) {
+    try {
+      console.log('📞 WebRTC: Handling offer from:', fromUserId);
+      
+      if (!this.peerConnection) {
+        console.error('📞 WebRTC: No peer connection for offer');
+        return false;
+      }
+
+      this.targetUserId = fromUserId;
+
+      // Set remote description (the offer)
+      console.log('📞 WebRTC: Setting remote description (offer)');
+      const rtcOffer = new RTCSessionDescription(offer);
+      await this.peerConnection.setRemoteDescription(rtcOffer);
+      this.hasRemoteDescription = true;
+      
+      console.log('📞 WebRTC: Remote description set');
+
+      // Process any queued ICE candidates
+      await this._processPendingCandidates();
+
+      // Create and send answer
+      await this._createAndSendAnswer();
+      
+      return true;
+    } catch (error) {
+      console.error('📞 WebRTC: Handle offer error:', error);
+      return false;
+    }
   }
 
   /**
-   * PUBLIC: Manual initialization as receiver (for compatibility)
+   * Handle incoming answer (CALLER only)
    */
-  async initializeAsReceiver(targetUserId, callId) {
-    this.targetUserId = targetUserId;
-    this.callId = callId;
-    this.isCaller = false;
-    return await this._prepareAsReceiver();
+  async handleAnswer(answer) {
+    try {
+      console.log('📞 WebRTC: Handling answer');
+      
+      if (!this.peerConnection) {
+        console.error('📞 WebRTC: No peer connection for answer');
+        return false;
+      }
+
+      const signalingState = this.peerConnection.signalingState;
+      console.log('📞 WebRTC: Current signaling state:', signalingState);
+
+      console.log('📞 WebRTC: Setting remote description (answer)');
+      const rtcAnswer = new RTCSessionDescription(answer);
+      await this.peerConnection.setRemoteDescription(rtcAnswer);
+      this.hasRemoteDescription = true;
+      
+      console.log('📞 WebRTC: Remote description (answer) set');
+
+      // Process any queued ICE candidates
+      await this._processPendingCandidates();
+      
+      return true;
+    } catch (error) {
+      console.error('📞 WebRTC: Handle answer error:', error);
+      return false;
+    }
   }
 
   /**
-   * Start audio session for calls
+   * Add ICE candidate
+   */
+  async addIceCandidate(candidate) {
+    try {
+      if (!candidate) return;
+
+      // Queue if not ready
+      if (!this.peerConnection || !this.hasRemoteDescription) {
+        console.log('📞 WebRTC: Queuing ICE candidate');
+        this.pendingIceCandidates.push(candidate);
+        return;
+      }
+
+      const rtcCandidate = new RTCIceCandidate(candidate);
+      await this.peerConnection.addIceCandidate(rtcCandidate);
+      console.log('📞 WebRTC: ICE candidate added');
+    } catch (error) {
+      if (!error.message?.includes('location not found')) {
+        console.error('📞 WebRTC: Add ICE error:', error.message);
+      }
+    }
+  }
+
+  /**
+   * Start audio session
    */
   _startAudioSession() {
     if (InCallManager) {
@@ -237,14 +307,13 @@ class WebRTCService {
    */
   async _getLocalStream() {
     try {
-      console.log('📞 WebRTC: Requesting microphone...');
+      console.log('📞 WebRTC: Requesting microphone');
       
       const constraints = {
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
-          sampleRate: 44100,
         },
         video: false,
       };
@@ -258,10 +327,10 @@ class WebRTCService {
         throw new Error('No audio tracks available');
       }
 
-      // Verify track is enabled
+      // Ensure track is enabled
       audioTracks.forEach(track => {
-        console.log('📞 Audio track:', track.id, 'enabled:', track.enabled, 'muted:', track.muted);
         track.enabled = true;
+        console.log('📞 Audio track:', track.id, 'enabled:', track.enabled);
       });
 
       return this.localStream;
@@ -272,15 +341,15 @@ class WebRTCService {
   }
 
   /**
-   * Create RTCPeerConnection with handlers
+   * Create RTCPeerConnection
    */
   async _createPeerConnection() {
-    console.log('📞 WebRTC: Creating peer connection...');
+    console.log('📞 WebRTC: Creating peer connection');
     
     this.peerConnection = new RTCPeerConnection(ICE_SERVERS);
     this.hasRemoteDescription = false;
 
-    // ICE candidate handler - send to remote
+    // ICE candidate handler
     this.peerConnection.onicecandidate = (event) => {
       if (event.candidate && this.socketService && this.targetUserId) {
         console.log('📞 WebRTC: Sending ICE candidate');
@@ -288,70 +357,54 @@ class WebRTCService {
       }
     };
 
-    // ICE connection state - CRITICAL for knowing when audio works
+    // ICE connection state
     this.peerConnection.oniceconnectionstatechange = () => {
       const state = this.peerConnection?.iceConnectionState;
       console.log('📞 WebRTC: ICE state:', state);
 
-      if (this.onConnectionStateChangeCallback) {
-        this.onConnectionStateChangeCallback(state);
+      if (this.callbacks.onConnectionStateChange) {
+        this.callbacks.onConnectionStateChange(state);
       }
 
       if (state === 'connected' || state === 'completed') {
-        console.log('✅ WebRTC: ICE CONNECTED - Audio should work now!');
+        console.log('✅ WebRTC: ICE CONNECTED - Audio should work!');
         
-        // Notify server that we're connected
+        // Signal to server
         if (this.socketService && this.callId) {
           this.socketService.signalCallConnected(this.callId);
         }
         
-        if (this.onCallConnectedCallback) {
-          this.onCallConnectedCallback();
+        if (this.callbacks.onCallConnected) {
+          this.callbacks.onCallConnected();
         }
-        if (this.onAudioConnectedCallback) {
-          this.onAudioConnectedCallback();
+        if (this.callbacks.onAudioConnected) {
+          this.callbacks.onAudioConnected();
         }
       } else if (state === 'failed') {
         console.error('❌ WebRTC: ICE FAILED');
-        this._notifyError('Connection failed');
-        if (this.onCallEndedCallback) {
-          this.onCallEndedCallback('connection_failed');
+        if (this.callbacks.onCallEnded) {
+          this.callbacks.onCallEnded('connection_failed');
         }
-      } else if (state === 'disconnected') {
-        console.warn('⚠️ WebRTC: ICE disconnected');
       }
     };
 
     // Connection state
     this.peerConnection.onconnectionstatechange = () => {
-      const state = this.peerConnection?.connectionState;
-      console.log('📞 WebRTC: Connection state:', state);
-      
-      if (state === 'failed' || state === 'closed') {
-        console.error('📞 WebRTC: Connection', state);
-      }
+      console.log('📞 WebRTC: Connection state:', this.peerConnection?.connectionState);
     };
 
-    // Signaling state
-    this.peerConnection.onsignalingstatechange = () => {
-      console.log('📞 WebRTC: Signaling state:', this.peerConnection?.signalingState);
-    };
-
-    // CRITICAL: Remote track handler - this is where we get audio
+    // Remote track handler - THIS IS WHERE WE GET AUDIO
     this.peerConnection.ontrack = (event) => {
       console.log('📞 WebRTC: *** RECEIVED REMOTE TRACK ***');
       console.log('   Track kind:', event.track.kind);
       console.log('   Track enabled:', event.track.enabled);
-      console.log('   Track muted:', event.track.muted);
       
       if (event.streams && event.streams[0]) {
         this.remoteStream = event.streams[0];
+        console.log('📞 WebRTC: Remote stream set');
         
-        const remoteTracks = this.remoteStream.getAudioTracks();
-        console.log('📞 WebRTC: Remote stream has', remoteTracks.length, 'audio track(s)');
-        
-        if (this.onRemoteStreamCallback) {
-          this.onRemoteStreamCallback(this.remoteStream);
+        if (this.callbacks.onRemoteStream) {
+          this.callbacks.onRemoteStream(this.remoteStream);
         }
       }
     };
@@ -364,7 +417,7 @@ class WebRTCService {
    */
   _addLocalTracks() {
     if (!this.localStream || !this.peerConnection) {
-      console.error('📞 WebRTC: Cannot add tracks - no stream or connection');
+      console.error('📞 WebRTC: Cannot add tracks');
       return;
     }
 
@@ -372,26 +425,24 @@ class WebRTCService {
     console.log('📞 WebRTC: Adding', tracks.length, 'local track(s)');
     
     tracks.forEach((track) => {
-      console.log('📞 WebRTC: Adding track:', track.kind, 'enabled:', track.enabled);
+      console.log('📞 WebRTC: Adding track:', track.kind);
       this.peerConnection.addTrack(track, this.localStream);
     });
   }
 
   /**
-   * Create SDP offer and send to remote (CALLER only)
+   * Create and send offer
    */
   async _createAndSendOffer() {
     try {
-      console.log('📞 WebRTC: Creating offer...');
+      console.log('📞 WebRTC: Creating offer');
       
-      const offerOptions = {
+      const offer = await this.peerConnection.createOffer({
         offerToReceiveAudio: true,
         offerToReceiveVideo: false,
-      };
-
-      const offer = await this.peerConnection.createOffer(offerOptions);
+      });
       
-      console.log('📞 WebRTC: Setting local description (offer)...');
+      console.log('📞 WebRTC: Setting local description (offer)');
       await this.peerConnection.setLocalDescription(offer);
       
       console.log('📞 WebRTC: Sending offer to:', this.targetUserId);
@@ -405,49 +456,15 @@ class WebRTCService {
   }
 
   /**
-   * Handle incoming offer (RECEIVER only)
-   */
-  async _handleRemoteOffer(offer, fromUserId) {
-    try {
-      console.log('📞 WebRTC: Handling offer from:', fromUserId);
-      
-      // Make sure we have a peer connection
-      if (!this.peerConnection) {
-        console.log('📞 WebRTC: Creating peer connection for offer...');
-        await this._prepareAsReceiver();
-      }
-
-      this.targetUserId = fromUserId;
-
-      // Set remote description (the offer)
-      console.log('📞 WebRTC: Setting remote description (offer)...');
-      const rtcOffer = new RTCSessionDescription(offer);
-      await this.peerConnection.setRemoteDescription(rtcOffer);
-      this.hasRemoteDescription = true;
-      
-      console.log('📞 WebRTC: Remote description set');
-
-      // Process any queued ICE candidates
-      await this._processPendingCandidates();
-
-      // Create and send answer
-      await this._createAndSendAnswer();
-    } catch (error) {
-      console.error('📞 WebRTC: Handle offer error:', error);
-      this._notifyError('Failed to process call');
-    }
-  }
-
-  /**
-   * Create SDP answer and send to remote (RECEIVER only)
+   * Create and send answer
    */
   async _createAndSendAnswer() {
     try {
-      console.log('📞 WebRTC: Creating answer...');
+      console.log('📞 WebRTC: Creating answer');
       
       const answer = await this.peerConnection.createAnswer();
       
-      console.log('📞 WebRTC: Setting local description (answer)...');
+      console.log('📞 WebRTC: Setting local description (answer)');
       await this.peerConnection.setLocalDescription(answer);
       
       console.log('📞 WebRTC: Sending answer to:', this.targetUserId);
@@ -457,65 +474,6 @@ class WebRTCService {
     } catch (error) {
       console.error('📞 WebRTC: Create answer error:', error);
       throw error;
-    }
-  }
-
-  /**
-   * Handle incoming answer (CALLER only)
-   */
-  async _handleRemoteAnswer(answer) {
-    try {
-      console.log('📞 WebRTC: Handling answer');
-      
-      if (!this.peerConnection) {
-        console.error('📞 WebRTC: No peer connection for answer');
-        return;
-      }
-
-      const signalingState = this.peerConnection.signalingState;
-      console.log('📞 WebRTC: Current signaling state:', signalingState);
-      
-      if (signalingState !== 'have-local-offer') {
-        console.warn('📞 WebRTC: Unexpected state for answer:', signalingState);
-        // Still try to set it
-      }
-
-      console.log('📞 WebRTC: Setting remote description (answer)...');
-      const rtcAnswer = new RTCSessionDescription(answer);
-      await this.peerConnection.setRemoteDescription(rtcAnswer);
-      this.hasRemoteDescription = true;
-      
-      console.log('📞 WebRTC: Remote description (answer) set');
-
-      // Process any queued ICE candidates
-      await this._processPendingCandidates();
-    } catch (error) {
-      console.error('📞 WebRTC: Handle answer error:', error);
-    }
-  }
-
-  /**
-   * Add ICE candidate (queue if not ready)
-   */
-  async _addIceCandidate(candidate) {
-    try {
-      if (!candidate) return;
-
-      // Queue if peer connection not ready or no remote description
-      if (!this.peerConnection || !this.hasRemoteDescription) {
-        console.log('📞 WebRTC: Queuing ICE candidate (not ready yet)');
-        this.pendingIceCandidates.push(candidate);
-        return;
-      }
-
-      console.log('📞 WebRTC: Adding ICE candidate');
-      const rtcCandidate = new RTCIceCandidate(candidate);
-      await this.peerConnection.addIceCandidate(rtcCandidate);
-    } catch (error) {
-      // Ignore errors for invalid candidates
-      if (!error.message?.includes('location not found')) {
-        console.error('📞 WebRTC: Add ICE error:', error.message);
-      }
     }
   }
 
@@ -531,17 +489,12 @@ class WebRTCService {
     this.pendingIceCandidates = [];
     
     for (const candidate of candidates) {
-      await this._addIceCandidate(candidate);
-    }
-  }
-
-  /**
-   * Notify error callback
-   */
-  _notifyError(message) {
-    console.error('📞 WebRTC Error:', message);
-    if (this.onCallEndedCallback) {
-      this.onCallEndedCallback('error');
+      try {
+        const rtcCandidate = new RTCIceCandidate(candidate);
+        await this.peerConnection.addIceCandidate(rtcCandidate);
+      } catch (e) {
+        // Ignore errors for invalid candidates
+      }
     }
   }
 
@@ -582,27 +535,15 @@ class WebRTCService {
   }
 
   /**
-   * Set callbacks
-   */
-  setCallbacks({ onRemoteStream, onConnectionStateChange, onCallConnected, onCallEnded, onAudioConnected }) {
-    this.onRemoteStreamCallback = onRemoteStream || null;
-    this.onConnectionStateChangeCallback = onConnectionStateChange || null;
-    this.onCallConnectedCallback = onCallConnected || null;
-    this.onCallEndedCallback = onCallEnded || null;
-    this.onAudioConnectedCallback = onAudioConnected || null;
-  }
-
-  /**
    * Full cleanup
    */
   cleanup() {
-    console.log('📞 WebRTC: Cleaning up...');
+    console.log('📞 WebRTC: Cleaning up');
 
     // Stop local tracks
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => {
         track.stop();
-        console.log('📞 Stopped track:', track.kind);
       });
       this.localStream = null;
     }
