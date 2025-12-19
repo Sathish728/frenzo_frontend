@@ -1,5 +1,11 @@
 /**
- * Socket Service for FrndZone - PRODUCTION FIXED VERSION
+ * Socket Service for FrndZone - V3 FIXED
+ * 
+ * Properly handles your backend events:
+ * - prepare_webrtc (for receiver)
+ * - create_offer (for caller) 
+ * - call_answered
+ * - webrtc_offer/answer/ice_candidate
  */
 
 import { io } from 'socket.io-client';
@@ -20,96 +26,94 @@ class SocketService {
   constructor() {
     this.socket = null;
     this.isConnected = false;
-    this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 10;
     this.heartbeatInterval = null;
     
-    // All callbacks in one object
-    this.callbacks = {
-      onWebRTCOffer: null,
-      onWebRTCAnswer: null,
-      onICECandidate: null,
-      onPrepareWebRTC: null,
-      onCreateOffer: null,
-      onCallAnswered: null,
-      onCallEnded: null,
-      onCoinUpdate: null,
-    };
+    // Callbacks for WebRTC events - set by call screens
+    this.onPrepareWebRTC = null;  // For receiver
+    this.onCreateOffer = null;    // For caller
+    this.onWebRTCOffer = null;
+    this.onWebRTCAnswer = null;
+    this.onICECandidate = null;
+    this.onCallAnsweredCallback = null;
+    this.onCallEndedCallback = null;
+    this.onCoinUpdate = null;
   }
 
   /**
-   * Set a single callback
+   * Set callbacks from call screens
    */
-  setCallback(name, callback) {
-    if (this.callbacks.hasOwnProperty(name)) {
-      this.callbacks[name] = callback;
-    }
+  setCallbacks(callbacks) {
+    if (callbacks.onPrepareWebRTC) this.onPrepareWebRTC = callbacks.onPrepareWebRTC;
+    if (callbacks.onCreateOffer) this.onCreateOffer = callbacks.onCreateOffer;
+    if (callbacks.onWebRTCOffer) this.onWebRTCOffer = callbacks.onWebRTCOffer;
+    if (callbacks.onWebRTCAnswer) this.onWebRTCAnswer = callbacks.onWebRTCAnswer;
+    if (callbacks.onICECandidate) this.onICECandidate = callbacks.onICECandidate;
+    if (callbacks.onCallAnswered) this.onCallAnsweredCallback = callbacks.onCallAnswered;
+    if (callbacks.onCallEnded) this.onCallEndedCallback = callbacks.onCallEnded;
+    if (callbacks.onCoinUpdate) this.onCoinUpdate = callbacks.onCoinUpdate;
   }
 
-  /**
-   * Connect to socket server
-   */
+  clearCallbacks() {
+    this.onPrepareWebRTC = null;
+    this.onCreateOffer = null;
+    this.onWebRTCOffer = null;
+    this.onWebRTCAnswer = null;
+    this.onICECandidate = null;
+    this.onCallAnsweredCallback = null;
+    this.onCallEndedCallback = null;
+    this.onCoinUpdate = null;
+  }
+
   connect(token) {
     if (this.socket?.connected) {
       console.log('🔌 Socket already connected');
       return;
     }
 
-    console.log('🔌 Connecting to socket:', SOCKET_URL);
+    console.log('🔌 Connecting to:', SOCKET_URL);
 
     this.socket = io(SOCKET_URL, {
       auth: { token },
       transports: ['websocket', 'polling'],
       reconnection: true,
-      reconnectionAttempts: this.maxReconnectAttempts,
+      reconnectionAttempts: 10,
       reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
       timeout: 20000,
-      forceNew: false,
     });
 
-    this.setupListeners();
+    this._setupListeners();
   }
 
-  /**
-   * Setup all socket event listeners
-   */
-  setupListeners() {
+  _setupListeners() {
     if (!this.socket) return;
 
-    // ========== CONNECTION EVENTS ==========
+    // Connection
     this.socket.on('connect', () => {
       console.log('✅ Socket connected:', this.socket.id);
       this.isConnected = true;
-      this.reconnectAttempts = 0;
 
       const state = store.getState();
       const userId = state.auth.user?.id || state.auth.user?._id;
       if (userId) {
         this.socket.emit('user_online', userId);
-        console.log('📡 Registered online:', userId);
+        console.log('📡 User online:', userId);
       }
 
-      this.startHeartbeat();
+      this._startHeartbeat();
     });
 
     this.socket.on('disconnect', (reason) => {
-      console.log('❌ Socket disconnected:', reason);
+      console.log('❌ Disconnected:', reason);
       this.isConnected = false;
-      this.stopHeartbeat();
-      
-      if (reason === 'io server disconnect') {
-        setTimeout(() => this.socket?.connect(), 1000);
-      }
+      this._stopHeartbeat();
     });
 
     this.socket.on('connect_error', (error) => {
-      console.error('🚨 Socket connection error:', error.message);
-      this.reconnectAttempts++;
+      console.error('🚨 Connection error:', error.message);
     });
 
-    this.socket.on('reconnect', (attemptNumber) => {
-      console.log('🔄 Reconnected after', attemptNumber, 'attempts');
+    this.socket.on('reconnect', () => {
+      console.log('🔄 Reconnected');
       const state = store.getState();
       const userId = state.auth.user?.id || state.auth.user?._id;
       if (userId) {
@@ -117,32 +121,28 @@ class SocketService {
       }
     });
 
-    this.socket.on('pong', () => {});
-
-    // ========== USER STATUS ==========
+    // Women list
     this.socket.on('women_list_updated', (data) => {
-      console.log('👥 Women list updated');
       const women = Array.isArray(data) ? data : (data.women || []);
       store.dispatch(setAvailableWomen(women));
     });
 
     this.socket.on('woman_status_changed', (data) => {
-      console.log('👤 Woman status changed:', data);
       store.dispatch(updateWomanStatus(data));
     });
 
-    // ========== COINS ==========
+    // Coins
     this.socket.on('coins_updated', (data) => {
-      console.log('💰 Coins updated:', data.coins);
+      console.log('💰 Coins:', data);
       store.dispatch(updateCoins(data.coins));
-      if (this.callbacks.onCoinUpdate) {
-        this.callbacks.onCoinUpdate(data);
+      if (this.onCoinUpdate) {
+        this.onCoinUpdate(data);
       }
     });
 
     // ========== INCOMING CALL (for women) ==========
     this.socket.on('incoming_call', (data) => {
-      console.log('📞 INCOMING CALL:', JSON.stringify(data));
+      console.log('📞📞📞 INCOMING CALL:', JSON.stringify(data));
       
       const caller = data.caller || {
         _id: data.menUserId,
@@ -150,130 +150,126 @@ class SocketService {
         profileImage: data.profileImage || null,
       };
 
-      store.dispatch(
-        receiveCall({
-          caller: caller,
-          callId: data.callId || data.tempCallId,
-        }),
-      );
+      store.dispatch(receiveCall({
+        caller,
+        callId: data.callId || data.tempCallId,
+      }));
     });
 
     // ========== PREPARE WEBRTC (for receiver/woman) ==========
     this.socket.on('prepare_webrtc', (data) => {
-      console.log('📞 PREPARE_WEBRTC received:', data);
-      if (this.callbacks.onPrepareWebRTC) {
-        this.callbacks.onPrepareWebRTC(data);
+      console.log('📞 PREPARE_WEBRTC:', data);
+      if (this.onPrepareWebRTC) {
+        this.onPrepareWebRTC(data);
+      } else {
+        console.warn('⚠️ No prepare_webrtc handler!');
       }
     });
 
-    // ========== CREATE OFFER (for caller) ==========
-    this.socket.on('create_offer', (data) => {
-      console.log('📞 CREATE_OFFER received:', data);
-      if (this.callbacks.onCreateOffer) {
-        this.callbacks.onCreateOffer(data);
-      }
-    });
-
-    // ========== CALL ANSWERED (for caller - men) ==========
+    // ========== CALL ANSWERED (for caller/man) ==========
     this.socket.on('call_answered', (data) => {
-      console.log('📞 CALL_ANSWERED received:', data);
+      console.log('📞 CALL_ANSWERED:', data);
       store.dispatch(callAnswered({ callId: data.callId }));
-      
-      if (this.callbacks.onCallAnswered) {
-        this.callbacks.onCallAnswered(data);
+      if (this.onCallAnsweredCallback) {
+        this.onCallAnsweredCallback(data);
+      }
+    });
+
+    // ========== CREATE OFFER (for caller - after receiver is ready) ==========
+    this.socket.on('create_offer', (data) => {
+      console.log('📞 CREATE_OFFER:', data);
+      if (this.onCreateOffer) {
+        this.onCreateOffer(data);
+      } else {
+        console.warn('⚠️ No create_offer handler!');
       }
     });
 
     // ========== CALL CONNECTED ==========
     this.socket.on('call_connected', (data) => {
-      console.log('📞 CALL_CONNECTED received:', data);
+      console.log('📞 CALL_CONNECTED');
       store.dispatch(callConnected());
     });
 
-    // ========== CALL DURATION UPDATE ==========
+    // ========== CALL DURATION ==========
     this.socket.on('call_duration_update', (data) => {
-      console.log('⏱️ Duration update:', data);
-      store.dispatch(
-        updateDuration({
-          duration: data.duration,
-          coinsUsed: data.coinsUsed,
-          coinsEarned: data.coinsEarned,
-        }),
-      );
+      store.dispatch(updateDuration({
+        duration: data.duration,
+        coinsUsed: data.coinsUsed,
+        coinsEarned: data.coinsEarned,
+      }));
     });
 
     // ========== CALL ENDED ==========
     this.socket.on('call_ended', (data) => {
-      console.log('📞 CALL_ENDED received:', data);
-      store.dispatch(
-        endCall({
-          reason: data.reason || 'ended',
-          duration: data.duration,
-          coinsUsed: data.coinsUsed,
-          coinsEarned: data.coinsEarned,
-        }),
-      );
-      if (this.callbacks.onCallEnded) {
-        this.callbacks.onCallEnded(data);
+      console.log('📞 CALL_ENDED:', data);
+      store.dispatch(endCall({
+        reason: data.reason || 'ended',
+        duration: data.duration,
+        coinsUsed: data.coinsUsed,
+        coinsEarned: data.coinsEarned,
+      }));
+      if (this.onCallEndedCallback) {
+        this.onCallEndedCallback(data);
       }
     });
 
-    // ========== CALL EVENTS ==========
-    this.socket.on('call_missed', (data) => {
-      console.log('📞 Call missed:', data);
-    });
-
+    // Call failures
     this.socket.on('call_rejected', (data) => {
-      console.log('📞 Call rejected:', data);
-      store.dispatch(callFailed({ reason: 'rejected', error: data.message }));
+      console.log('📞 Rejected:', data);
+      store.dispatch(callFailed({ reason: 'rejected' }));
     });
 
     this.socket.on('call_failed', (data) => {
-      console.log('📞 Call failed:', data);
-      store.dispatch(callFailed({ reason: data.reason || 'failed', error: data.message }));
+      console.log('📞 Failed:', data);
+      store.dispatch(callFailed({ reason: data.reason || 'failed' }));
     });
 
     this.socket.on('user_busy', (data) => {
-      console.log('📞 User busy:', data);
-      store.dispatch(callFailed({ reason: 'busy', error: data.message }));
+      console.log('📞 Busy:', data);
+      store.dispatch(callFailed({ reason: 'busy' }));
     });
 
     this.socket.on('insufficient_coins', (data) => {
-      console.log('💰 Insufficient coins:', data);
-      store.dispatch(callFailed({ reason: 'insufficient_coins', error: data.message }));
+      console.log('💰 Insufficient:', data);
+      store.dispatch(callFailed({ reason: 'insufficient_coins' }));
     });
 
     this.socket.on('no_answer', (data) => {
-      console.log('📞 No answer:', data);
-      store.dispatch(callFailed({ reason: 'no_answer', error: 'No answer' }));
+      console.log('📞 No answer');
+      store.dispatch(callFailed({ reason: 'no_answer' }));
     });
 
     // ========== WEBRTC SIGNALING ==========
     this.socket.on('webrtc_offer', (data) => {
-      console.log('🎥 WebRTC OFFER received from:', data.fromUserId);
-      if (this.callbacks.onWebRTCOffer) {
-        this.callbacks.onWebRTCOffer(data);
+      console.log('🎥 OFFER from:', data.fromUserId);
+      if (this.onWebRTCOffer) {
+        this.onWebRTCOffer(data);
+      } else {
+        console.warn('⚠️ No webrtc_offer handler!');
       }
     });
 
     this.socket.on('webrtc_answer', (data) => {
-      console.log('🎥 WebRTC ANSWER received from:', data.fromUserId);
-      if (this.callbacks.onWebRTCAnswer) {
-        this.callbacks.onWebRTCAnswer(data);
+      console.log('🎥 ANSWER from:', data.fromUserId);
+      if (this.onWebRTCAnswer) {
+        this.onWebRTCAnswer(data);
+      } else {
+        console.warn('⚠️ No webrtc_answer handler!');
       }
     });
 
     this.socket.on('ice_candidate', (data) => {
-      console.log('🎥 ICE candidate received');
-      if (this.callbacks.onICECandidate) {
-        this.callbacks.onICECandidate(data);
+      if (this.onICECandidate) {
+        this.onICECandidate(data);
       }
     });
+
+    this.socket.on('pong', () => {});
   }
 
-  // ========== HEARTBEAT ==========
-  startHeartbeat() {
-    this.stopHeartbeat();
+  _startHeartbeat() {
+    this._stopHeartbeat();
     this.heartbeatInterval = setInterval(() => {
       if (this.socket?.connected) {
         this.socket.emit('ping');
@@ -281,7 +277,7 @@ class SocketService {
     }, 25000);
   }
 
-  stopHeartbeat() {
+  _stopHeartbeat() {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
       this.heartbeatInterval = null;
@@ -290,114 +286,82 @@ class SocketService {
 
   // ========== CALL METHODS ==========
   initiateCall(womanId) {
-    if (!this.socket?.connected) {
-      console.error('Socket not connected');
-      return false;
-    }
+    if (!this.socket?.connected) return false;
     console.log('📞 Initiating call to:', womanId);
     this.socket.emit('initiate_call', { womanId });
     return true;
   }
 
   answerCall(callId) {
-    if (!this.socket?.connected) {
-      console.error('Socket not connected');
-      return false;
-    }
-    console.log('📞 Answering call:', callId);
+    if (!this.socket?.connected) return false;
+    console.log('📞 Answering:', callId);
     this.socket.emit('answer_call', { callId });
     return true;
   }
 
   declineCall(callId, reason = 'declined') {
-    if (!this.socket?.connected) {
-      console.error('Socket not connected');
-      return false;
-    }
-    console.log('📞 Declining call:', callId);
+    if (!this.socket?.connected) return false;
     this.socket.emit('reject_call', { callId, reason });
     return true;
   }
 
   endCall(callId, reason = 'user_ended') {
-    if (!this.socket?.connected) {
-      console.error('Socket not connected');
-      return false;
-    }
-    console.log('📞 Ending call:', callId);
+    if (!this.socket?.connected) return false;
     this.socket.emit('end_call', { callId, reason });
     return true;
   }
 
+  // Tell server receiver is ready for offer
   signalWebRTCReady(callId) {
-    if (!this.socket?.connected) {
-      console.error('Socket not connected');
-      return false;
-    }
-    console.log('📞 Signaling WebRTC ready for call:', callId);
+    if (!this.socket?.connected) return false;
+    console.log('📞 Signaling webrtc_ready');
     this.socket.emit('webrtc_ready', { callId });
     return true;
   }
 
+  // Tell server call is connected (for coin deduction)
   signalCallConnected(callId) {
-    if (!this.socket?.connected) {
-      console.error('Socket not connected');
-      return false;
-    }
-    console.log('📞 Signaling call connected:', callId);
+    if (!this.socket?.connected) return false;
+    console.log('📞 Signaling call_connected_ack');
     this.socket.emit('call_connected_ack', { callId });
     return true;
   }
 
-  // ========== WEBRTC SIGNALING METHODS ==========
+  // ========== WEBRTC SIGNALING ==========
   sendWebRTCOffer(targetUserId, offer) {
-    if (!this.socket?.connected) {
-      console.error('Socket not connected for WebRTC offer');
-      return false;
-    }
-    console.log('🎥 SENDING WebRTC offer to:', targetUserId);
+    if (!this.socket?.connected) return false;
+    console.log('🎥 Sending OFFER to:', targetUserId);
     this.socket.emit('webrtc_offer', { targetUserId, offer });
     return true;
   }
 
   sendWebRTCAnswer(targetUserId, answer) {
-    if (!this.socket?.connected) {
-      console.error('Socket not connected for WebRTC answer');
-      return false;
-    }
-    console.log('🎥 SENDING WebRTC answer to:', targetUserId);
+    if (!this.socket?.connected) return false;
+    console.log('🎥 Sending ANSWER to:', targetUserId);
     this.socket.emit('webrtc_answer', { targetUserId, answer });
     return true;
   }
 
   sendICECandidate(targetUserId, candidate) {
-    if (!this.socket?.connected) {
-      console.error('Socket not connected for ICE candidate');
-      return false;
-    }
+    if (!this.socket?.connected) return false;
     this.socket.emit('ice_candidate', { targetUserId, candidate });
     return true;
   }
 
-  // ========== AVAILABILITY ==========
+  // Availability
   setAvailability(isAvailable) {
     if (!this.socket?.connected) return false;
-    console.log('🔄 Setting availability:', isAvailable);
     this.socket.emit('set_availability', { isAvailable });
     return true;
   }
 
-  // ========== UTILITY ==========
   isSocketConnected() {
     return this.socket?.connected || false;
   }
 
-  getSocketId() {
-    return this.socket?.id || null;
-  }
-
   disconnect() {
-    this.stopHeartbeat();
+    this._stopHeartbeat();
+    this.clearCallbacks();
     if (this.socket) {
       this.socket.disconnect();
       this.socket = null;

@@ -1,5 +1,15 @@
 /**
- * IncomingCallScreen for Women (Receiver) - PRODUCTION FIXED VERSION
+ * IncomingCallScreen for Women (Receiver) - SIMPLIFIED VERSION
+ * 
+ * Flow:
+ * 1. Woman sees incoming call (ringing state)
+ * 2. Woman taps Answer
+ * 3. We IMMEDIATELY setup WebRTC (get mic, create peer connection)
+ * 4. We tell server we answered
+ * 5. We wait for WebRTC offer from caller
+ * 6. We create answer and send it back
+ * 7. ICE candidates exchange
+ * 8. Audio connects!
  */
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
@@ -39,99 +49,70 @@ const IncomingCallScreen = ({ navigation }) => {
   const dispatch = useDispatch();
   const { user } = useSelector((state) => state.auth);
   const { status, duration, remoteUser, callId, isMuted, isSpeakerOn } = useSelector(
-    (state) => state.call,
+    (state) => state.call
   );
 
   const timerRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
-  
+  const webrtcReadyRef = useRef(false);
+
   const [coinsEarned, setCoinsEarned] = useState(0);
   const [audioConnected, setAudioConnected] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('ringing');
 
   // Setup on mount
   useEffect(() => {
-    const init = async () => {
-      // Request permissions
-      const permissions = await requestCallPermissions();
-      if (!permissions.microphone) {
-        Alert.alert(
-          'Microphone Required',
-          'Cannot answer calls without microphone access.',
-          [{ text: 'OK', onPress: () => navigation.goBack() }]
-        );
-        return;
-      }
+    let mounted = true;
 
-      // Setup WebRTC with socket
-      webRTCService.setSocketService(socketService);
-      
-      // Set WebRTC callbacks
-      webRTCService.setCallbacks({
-        onRemoteStream: (stream) => {
-          console.log('📞 IncomingCall: Got remote audio stream');
-        },
-        onConnectionStateChange: (state) => {
-          console.log('📞 IncomingCall: ICE state:', state);
-        },
-        onCallConnected: () => {
-          console.log('📞 IncomingCall: Audio CONNECTED!');
+    // Set WebRTC callbacks
+    webRTCService.setSocketService(socketService);
+    webRTCService.setCallbacks({
+      onAudioConnected: () => {
+        if (mounted) {
+          console.log('✅ IncomingCall: Audio connected!');
           setAudioConnected(true);
           setConnectionStatus('connected');
           Vibration.vibrate(100);
           dispatch(callConnected());
-        },
-        onCallEnded: (reason) => {
-          console.log('📞 IncomingCall: Call ended:', reason);
+        }
+      },
+      onCallFailed: (reason) => {
+        if (mounted) {
+          console.log('❌ IncomingCall: Call failed:', reason);
           handleEndCall(reason);
-        },
-      });
-
-      // Setup socket callbacks
-      socketService.setCallback('onPrepareWebRTC', async (data) => {
-        console.log('📞 IncomingCall: Received prepare_webrtc');
-        setConnectionStatus('preparing');
-        
-        try {
-          await webRTCService.prepareAsReceiver(data.callId, data.remoteUserId);
-          setConnectionStatus('waiting_for_offer');
-        } catch (error) {
-          console.error('📞 IncomingCall: Failed to prepare WebRTC:', error);
-          handleEndCall('webrtc_error');
         }
-      });
+      },
+      onRemoteStream: (stream) => {
+        console.log('📞 IncomingCall: Got remote stream');
+      },
+    });
 
-      socketService.setCallback('onCallEnded', (data) => {
-        handleEndCall(data.reason || 'call_ended');
-      });
-
-      socketService.setCallback('onCoinUpdate', (data) => {
-        console.log('📞 IncomingCall: Coin update:', data);
-        if (data.earned !== undefined) {
-          setCoinsEarned(prev => prev + data.earned);
-        }
-        if (data.coins !== undefined) {
-          dispatch(updateCoins(data.coins));
-        }
-      });
-    };
-
-    init();
+    // Set socket WebRTC callbacks - receiver handles OFFERS
+    socketService.setWebRTCCallbacks({
+      onOffer: async (data) => {
+        console.log('📞 IncomingCall: Received WebRTC offer!');
+        setConnectionStatus('received_offer');
+        await webRTCService.handleOffer(data.offer || data, data.fromUserId);
+      },
+      onAnswer: null, // Receiver doesn't receive answers
+      onIceCandidate: async (data) => {
+        await webRTCService.handleIceCandidate(data.candidate, data.fromUserId);
+      },
+    });
 
     return () => {
+      mounted = false;
       Vibration.cancel();
       webRTCService.cleanup();
+      socketService.clearWebRTCCallbacks();
       if (timerRef.current) clearInterval(timerRef.current);
-      socketService.setCallback('onPrepareWebRTC', null);
-      socketService.setCallback('onCallEnded', null);
-      socketService.setCallback('onCoinUpdate', null);
     };
   }, []);
 
   // Handle back button
   useEffect(() => {
     const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (status === 'connected' || audioConnected) {
+      if (audioConnected) {
         handleEndCall('user_ended');
         return true;
       }
@@ -153,16 +134,8 @@ const IncomingCallScreen = ({ navigation }) => {
 
       const anim = Animated.loop(
         Animated.sequence([
-          Animated.timing(pulseAnim, {
-            toValue: 1.2,
-            duration: 500,
-            useNativeDriver: true,
-          }),
-          Animated.timing(pulseAnim, {
-            toValue: 1,
-            duration: 500,
-            useNativeDriver: true,
-          }),
+          Animated.timing(pulseAnim, { toValue: 1.2, duration: 500, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1, duration: 500, useNativeDriver: true }),
         ])
       );
       anim.start();
@@ -197,14 +170,47 @@ const IncomingCallScreen = ({ navigation }) => {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
+  /**
+   * ANSWER CALL - This is the key function
+   */
   const handleAnswer = async () => {
     console.log('📞 IncomingCall: Answering call', callId);
     Vibration.cancel();
     
+    // Request permissions first
+    const permissions = await requestCallPermissions();
+    if (!permissions.microphone) {
+      Alert.alert(
+        'Microphone Required',
+        'Cannot answer calls without microphone access.',
+        [{ text: 'OK', onPress: () => navigation.goBack() }]
+      );
+      return;
+    }
+
+    // Update UI state
     dispatch(callAnswered());
-    setConnectionStatus('answering');
+    setConnectionStatus('preparing');
     
-    // Tell server we answered - server will send 'prepare_webrtc' event
+    // Get caller ID
+    const callerId = remoteUser?._id;
+    console.log('📞 IncomingCall: Caller ID:', callerId);
+
+    // Setup WebRTC FIRST (get mic, create peer connection)
+    // This prepares us to receive the offer
+    const success = await webRTCService.answerCall(callerId, callId);
+    
+    if (!success) {
+      console.error('📞 IncomingCall: Failed to setup WebRTC');
+      handleEndCall('webrtc_error');
+      return;
+    }
+
+    webrtcReadyRef.current = true;
+    setConnectionStatus('waiting_for_offer');
+    console.log('📞 IncomingCall: WebRTC ready, waiting for offer...');
+
+    // NOW tell server we answered - this triggers caller to send offer
     socketService.answerCall(callId);
   };
 
@@ -218,7 +224,7 @@ const IncomingCallScreen = ({ navigation }) => {
   };
 
   const handleEndCall = useCallback((reason = 'user_ended') => {
-    console.log('📞 IncomingCall: Ending call, reason:', reason);
+    console.log('📞 IncomingCall: Ending call:', reason);
     
     Vibration.cancel();
     if (timerRef.current) {
@@ -263,15 +269,15 @@ const IncomingCallScreen = ({ navigation }) => {
     if (audioConnected) return 'Connected';
     switch (connectionStatus) {
       case 'ringing': return 'Incoming Call...';
-      case 'answering': return 'Answering...';
-      case 'preparing': return 'Preparing audio...';
+      case 'preparing': return 'Preparing...';
       case 'waiting_for_offer': return 'Connecting...';
+      case 'received_offer': return 'Connecting audio...';
       case 'connected': return 'Connected';
       default: return 'Connecting...';
     }
   };
 
-  // Ringing UI
+  // ========== RINGING UI ==========
   if (status === 'ringing') {
     return (
       <LinearGradient
@@ -314,7 +320,7 @@ const IncomingCallScreen = ({ navigation }) => {
     );
   }
 
-  // Connected UI
+  // ========== CONNECTED UI ==========
   return (
     <LinearGradient
       colors={[COLORS.background, '#1a1a2e', COLORS.surface]}

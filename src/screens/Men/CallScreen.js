@@ -1,5 +1,13 @@
 /**
- * CallScreen for Men (Caller) - PRODUCTION FIXED VERSION
+ * CallScreen for Men (Caller) - SIMPLIFIED VERSION
+ * 
+ * Flow:
+ * 1. Call is initiated from MenHomeScreen
+ * 2. This screen shows "Ringing..."
+ * 3. When woman answers, we get 'call_answered' event
+ * 4. THEN we start WebRTC and create offer
+ * 5. Send offer, receive answer, exchange ICE candidates
+ * 6. Audio connects!
  */
 
 import React, { useEffect, useState, useRef, useCallback } from 'react';
@@ -37,26 +45,18 @@ const CallScreen = ({ navigation, route }) => {
   const dispatch = useDispatch();
   const { woman } = route.params || {};
   const { user } = useSelector((state) => state.auth);
-  const {
-    status,
-    duration,
-    isMuted,
-    isSpeakerOn,
-    remoteUser,
-    callId,
-    endReason,
-    error,
-  } = useSelector((state) => state.call);
+  const { status, duration, isMuted, isSpeakerOn, remoteUser, callId, endReason, error } = useSelector((state) => state.call);
 
   const timerRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
-  
+  const webrtcStartedRef = useRef(false);
+
   const [audioConnected, setAudioConnected] = useState(false);
-  const [webrtcState, setWebrtcState] = useState('idle');
-  const [coinsUsed, setCoinsUsed] = useState(0);
 
   // Initialize on mount
   useEffect(() => {
+    let mounted = true;
+
     const init = async () => {
       // Request permissions
       const permissions = await requestCallPermissions();
@@ -69,62 +69,77 @@ const CallScreen = ({ navigation, route }) => {
         return;
       }
 
-      // Setup WebRTC service
-      webRTCService.setSocketService(socketService);
-      
       // Set WebRTC callbacks
+      webRTCService.setSocketService(socketService);
       webRTCService.setCallbacks({
+        onAudioConnected: () => {
+          if (mounted) {
+            console.log('✅ CallScreen: Audio connected!');
+            setAudioConnected(true);
+            Vibration.vibrate(100);
+            dispatch(callConnected());
+          }
+        },
+        onCallFailed: (reason) => {
+          if (mounted) {
+            console.log('❌ CallScreen: Call failed:', reason);
+            handleEndCall(reason);
+          }
+        },
         onRemoteStream: (stream) => {
           console.log('📞 CallScreen: Got remote stream');
         },
-        onConnectionStateChange: (state) => {
-          console.log('📞 CallScreen: ICE state:', state);
-          setWebrtcState(state);
-        },
-        onCallConnected: () => {
-          console.log('📞 CallScreen: Audio connected!');
-          setAudioConnected(true);
-          Vibration.vibrate(100);
-          dispatch(callConnected());
-        },
-        onCallEnded: (reason) => {
-          console.log('📞 CallScreen: Call ended:', reason);
-          handleEndCall(reason);
-        },
       });
 
-      // Setup socket callbacks for this call
-      // When call is answered and server says to create offer
-      socketService.setCallback('onCallAnswered', async (data) => {
-        console.log('📞 CallScreen: Call answered, waiting for create_offer signal');
-      });
-
-      socketService.setCallback('onCreateOffer', async (data) => {
-        console.log('📞 CallScreen: Received create_offer signal, initializing WebRTC');
-        const remoteUserId = data.remoteUserId || woman?._id;
-        await webRTCService.initializeAsCaller(remoteUserId, data.callId || callId);
-      });
-
-      socketService.setCallback('onCallEnded', (data) => {
-        handleEndCall(data.reason || 'remote_ended');
+      // Set socket WebRTC callbacks
+      socketService.setWebRTCCallbacks({
+        onOffer: null, // Caller doesn't receive offers
+        onAnswer: async (data) => {
+          console.log('📞 CallScreen: Received WebRTC answer');
+          await webRTCService.handleAnswer(data.offer || data.answer || data, data.fromUserId);
+        },
+        onIceCandidate: async (data) => {
+          await webRTCService.handleIceCandidate(data.candidate, data.fromUserId);
+        },
       });
     };
 
     init();
 
     return () => {
+      mounted = false;
       webRTCService.cleanup();
+      socketService.clearWebRTCCallbacks();
       if (timerRef.current) clearInterval(timerRef.current);
-      socketService.setCallback('onCallAnswered', null);
-      socketService.setCallback('onCreateOffer', null);
-      socketService.setCallback('onCallEnded', null);
     };
   }, []);
+
+  // KEY: When call is answered, START WebRTC and create offer
+  useEffect(() => {
+    const startWebRTC = async () => {
+      if (status === 'connecting' && !webrtcStartedRef.current) {
+        webrtcStartedRef.current = true;
+        console.log('📞 CallScreen: Call answered! Starting WebRTC...');
+        
+        const targetId = woman?._id || remoteUser?._id;
+        if (targetId) {
+          // Start call creates the offer and sends it
+          const success = await webRTCService.startCall(targetId, callId);
+          if (!success) {
+            console.error('📞 CallScreen: Failed to start WebRTC');
+            handleEndCall('webrtc_error');
+          }
+        }
+      }
+    };
+
+    startWebRTC();
+  }, [status, woman, remoteUser, callId]);
 
   // Handle back button
   useEffect(() => {
     const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (status === 'connected') {
+      if (audioConnected) {
         Alert.alert(
           'End Call?',
           'Are you sure you want to end this call?',
@@ -143,37 +158,29 @@ const CallScreen = ({ navigation, route }) => {
     });
 
     return () => backHandler.remove();
-  }, [status]);
+  }, [status, audioConnected]);
 
-  // Pulse animation
+  // Pulse animation for ringing
   useEffect(() => {
-    if (status === 'calling' || status === 'connecting') {
+    if (status === 'calling' || (status === 'connecting' && !audioConnected)) {
       const anim = Animated.loop(
         Animated.sequence([
-          Animated.timing(pulseAnim, {
-            toValue: 1.15,
-            duration: 1000,
-            useNativeDriver: true,
-          }),
-          Animated.timing(pulseAnim, {
-            toValue: 1,
-            duration: 1000,
-            useNativeDriver: true,
-          }),
-        ]),
+          Animated.timing(pulseAnim, { toValue: 1.15, duration: 1000, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1, duration: 1000, useNativeDriver: true }),
+        ])
       );
       anim.start();
       return () => anim.stop();
     } else {
       pulseAnim.setValue(1);
     }
-  }, [status]);
+  }, [status, audioConnected]);
 
-  // Call timeout
+  // Call timeout (30 seconds)
   useEffect(() => {
     if (status === 'calling') {
       const timeout = setTimeout(() => {
-        console.log('📞 CallScreen: Call timeout');
+        console.log('📞 CallScreen: Call timeout - no answer');
         handleEndCall('no_answer');
       }, 30000);
       return () => clearTimeout(timeout);
@@ -182,7 +189,7 @@ const CallScreen = ({ navigation, route }) => {
 
   // Timer for connected call
   useEffect(() => {
-    if (status === 'connected' && audioConnected) {
+    if (audioConnected) {
       console.log('📞 CallScreen: Starting call timer');
       timerRef.current = setInterval(() => {
         dispatch(incrementDuration());
@@ -195,9 +202,9 @@ const CallScreen = ({ navigation, route }) => {
         timerRef.current = null;
       }
     };
-  }, [status, audioConnected]);
+  }, [audioConnected]);
 
-  // Handle call status changes
+  // Handle call ended status
   useEffect(() => {
     if (status === 'ended') {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -226,11 +233,8 @@ const CallScreen = ({ navigation, route }) => {
             title = 'No Answer';
             message = 'The user did not answer.';
             break;
-          case 'failed':
-          case 'connection_failed':
-            title = 'Call Failed';
+          default:
             message = error || 'Unable to connect.';
-            break;
         }
 
         Alert.alert(title, message, [
@@ -251,8 +255,8 @@ const CallScreen = ({ navigation, route }) => {
     if (timerRef.current) clearInterval(timerRef.current);
     webRTCService.cleanup();
     socketService.endCall(callId);
-    dispatch(endCall({ reason, duration, coinsUsed }));
-  }, [callId, duration, coinsUsed]);
+    dispatch(endCall({ reason, duration }));
+  }, [callId, duration]);
 
   const handleToggleMute = useCallback(() => {
     webRTCService.toggleMute();
@@ -276,8 +280,8 @@ const CallScreen = ({ navigation, route }) => {
   const getStatusText = () => {
     switch (status) {
       case 'calling': return 'Ringing...';
-      case 'connecting': return 'Connecting...';
-      case 'connected': return audioConnected ? 'Connected' : 'Connecting audio...';
+      case 'connecting': return audioConnected ? 'Connected' : 'Connecting...';
+      case 'connected': return 'Connected';
       case 'ended': return 'Call Ended';
       default: return '';
     }
@@ -306,7 +310,7 @@ const CallScreen = ({ navigation, route }) => {
                 imageUrl={callUser?.profileImage}
                 size={130}
               />
-              {status === 'connected' && audioConnected && (
+              {audioConnected && (
                 <View style={styles.connectedBadge}>
                   <Icon name="phone-in-talk" size={18} color={COLORS.white} />
                 </View>
@@ -317,13 +321,13 @@ const CallScreen = ({ navigation, route }) => {
           <Text style={styles.userName}>{callUser?.name || 'Unknown'}</Text>
           <Text style={styles.statusText}>{getStatusText()}</Text>
 
-          {status === 'connected' && audioConnected && (
+          {audioConnected && (
             <View style={styles.timerSection}>
               <Text style={styles.timerText}>{formatDuration(duration)}</Text>
             </View>
           )}
 
-          {status === 'connected' && audioConnected && (
+          {audioConnected && (
             <View style={styles.qualityContainer}>
               <View style={[styles.qualityDot, { backgroundColor: COLORS.success }]} />
               <Text style={styles.qualityText}>Audio Connected</Text>
@@ -333,7 +337,7 @@ const CallScreen = ({ navigation, route }) => {
 
         {/* Controls */}
         <View style={styles.controlsContainer}>
-          {status === 'connected' && audioConnected && (
+          {audioConnected && (
             <View style={styles.controlsRow}>
               <TouchableOpacity onPress={handleToggleMute} style={styles.controlButton}>
                 <View style={[styles.controlIconBg, isMuted && styles.controlIconBgActive]}>
